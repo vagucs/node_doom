@@ -1,0 +1,22 @@
+{
+  "name": "node_doom",
+  "version": "1.0.0",
+  "description": "DOOM generic ported from Harbour to Node.js CLI with SDL2 (koffi)",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "tsx doom.ts",
+    "doom": "tsx doom.ts"
+  },
+  "dependencies": {
+    "koffi": "^2.11.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}
