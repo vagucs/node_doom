@@ -230,6 +230,7 @@ export class Game {
       p.health -= damage;
       target.health = p.health;
       p.damagecount = Math.min(100, p.damagecount + damage);
+      p.attacker = source;
       if (p.health <= 0) {
         p.health = 0;
         p.playerstate = PST_DEAD;
@@ -275,6 +276,7 @@ export class Game {
     this.finale = null;
     this.sound.playLevelMusic(this.episode, this.mapn);
     this.automap.resetLevel();
+    this.status?.reset(this.player);
     process.stdout.write(`Entering E${this.episode}M${this.mapn}\n`);
   }
 
@@ -398,6 +400,7 @@ export class Game {
     this.palette = -1;
     this.keys = {};
     this.automap.resetLevel();
+    this.status?.reset(this.player ?? null);
     this.player?.setMessage("game loaded.");
     process.stdout.write(`Loaded E${this.episode}M${this.mapn}\n`);
     return true;
@@ -492,6 +495,7 @@ export class Game {
     }
     ++this.leveltime;
     this.automap.ticker(this);
+    this.status?.ticker(this.player);
   }
 
   draw(): void {

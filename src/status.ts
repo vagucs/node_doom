@@ -10,12 +10,15 @@
  * www.vagucs.com.br
  */
 
-import { intdiv } from "./compat.ts";
+import { Collision } from "./collision.ts";
+import { asU32, intdiv } from "./compat.ts";
 import {
   AM_CELL,
   AM_CLIP,
   AM_MISL,
   AM_SHELL,
+  ANG45,
+  ANG180,
   CF_GODMODE,
   HU_FONTEND,
   HU_FONTSTART,
@@ -25,6 +28,7 @@ import {
   IT_REDSKULL,
   IT_YELLOWCARD,
   IT_YELLOWSKULL,
+  TICRATE,
   WP_BFG,
   WP_CHAINGUN,
   WP_MISSILE,
@@ -35,6 +39,23 @@ import {
 import { Player } from "./player.ts";
 import { drawPatch, patchSize } from "./vvideo.ts";
 import type { Wad } from "./wad.ts";
+
+const ST_NUMPAINFACES = 5;
+const ST_NUMSTRAIGHTFACES = 3;
+const ST_NUMTURNFACES = 2;
+const ST_NUMSPECIALFACES = 3;
+const ST_FACESTRIDE = ST_NUMSTRAIGHTFACES + ST_NUMTURNFACES + ST_NUMSPECIALFACES;
+const ST_TURNOFFSET = ST_NUMSTRAIGHTFACES;
+const ST_OUCHOFFSET = ST_TURNOFFSET + ST_NUMTURNFACES;
+const ST_EVILGRINOFFSET = ST_OUCHOFFSET + 1;
+const ST_RAMPAGEOFFSET = ST_EVILGRINOFFSET + 1;
+const ST_GODFACE = ST_NUMPAINFACES * ST_FACESTRIDE;
+const ST_DEADFACE = ST_GODFACE + 1;
+const ST_EVILGRINCOUNT = 2 * TICRATE;
+const ST_STRAIGHTFACECOUNT = Math.trunc(TICRATE / 2);
+const ST_TURNCOUNT = TICRATE;
+const ST_RAMPAGEDELAY = 2 * TICRATE;
+const ST_MUCHPAIN = 20;
 
 export class Status {
   private static readonly AMMO_X = 44;
@@ -57,10 +78,19 @@ export class Status {
   private keys: Array<Buffer | null> = [];
   private armsBg: Buffer | null;
   private armsOff: Buffer[] = [];
-  private faces: Buffer[] = [];
-  private godFace: Buffer;
-  private deadFace: Buffer | null;
+  private faces: Array<Buffer | null> = [];
+  private fallbackFace: Buffer;
   private font: Array<Buffer | null> = [];
+
+  private faceIndex = 0;
+  private faceCount = 0;
+  private facePriority = 0;
+  private oldHealth = -1;
+  private painOldHealth = -1;
+  private lastCalc = 0;
+  private lastAttackDown = -1;
+  private oldWeaponsOwned: boolean[] = [];
+  private rnd = 1;
 
   constructor(wad: Wad) {
     this.wad = wad;
@@ -73,18 +103,152 @@ export class Status {
     for (let i = 0; i < 6; ++i) this.keys.push(this.optional(`STKEYS${i}`));
     this.armsBg = this.optional("STARMS");
     for (let i = 2; i < 8; ++i) this.armsOff.push(wad.cacheLumpName(`STGNUM${i}`));
-    const fallback = wad.cacheLumpName("STFST00");
-    for (let pain = 0; pain < 5; ++pain) this.faces.push(this.optional(`STFST${pain}0`) ?? fallback);
-    this.godFace = this.optional("STFGOD0") ?? fallback;
-    this.deadFace = this.optional("STFDEAD0");
+    this.fallbackFace = wad.cacheLumpName("STFST00");
+    for (let pain = 0; pain < ST_NUMPAINFACES; ++pain) {
+      for (let look = 0; look < ST_NUMSTRAIGHTFACES; ++look) this.faces.push(this.optional(`STFST${pain}${look}`));
+      this.faces.push(this.optional(`STFTR${pain}0`));
+      this.faces.push(this.optional(`STFTL${pain}0`));
+      this.faces.push(this.optional(`STFOUCH${pain}`));
+      this.faces.push(this.optional(`STFEVL${pain}`));
+      this.faces.push(this.optional(`STFKILL${pain}`));
+    }
+    this.faces.push(this.optional("STFGOD0"));
+    this.faces.push(this.optional("STFDEAD0"));
     for (let ch = HU_FONTSTART; ch <= HU_FONTEND; ++ch) {
       this.font.push(this.optional(`STCFN${String(ch).padStart(3, "0")}`));
     }
+    this.reset(null);
+  }
+
+  reset(player: Player | null): void {
+    this.faceIndex = 0;
+    this.faceCount = 0;
+    this.facePriority = 0;
+    this.oldHealth = -1;
+    this.painOldHealth = -1;
+    this.lastCalc = 0;
+    this.lastAttackDown = -1;
+    this.oldWeaponsOwned = player !== null ? [...player.weaponowned] : Array(9).fill(false);
+  }
+
+  ticker(player: Player | null): void {
+    if (player === null) return;
+    this.rnd = (Math.imul(this.rnd, 1103515245) + 12345) >>> 0;
+    const stRandom = (this.rnd >>> 16) & 255;
+    this.updateFaceWidget(player, stRandom);
+    this.oldHealth = player.health;
   }
 
   private optional(name: string): Buffer | null {
     const n = this.wad.checkNumForName(name);
     return n >= 0 ? this.wad.cacheLumpNum(n) : null;
+  }
+
+  private facePatch(index: number): Buffer {
+    return this.faces[index] ?? this.fallbackFace;
+  }
+
+  private calcPainOffset(player: Player): number {
+    const health = Math.min(100, Math.max(0, Math.trunc(player.health)));
+    if (health !== this.painOldHealth) {
+      this.lastCalc = ST_FACESTRIDE * intdiv((100 - health) * ST_NUMPAINFACES, 101);
+      this.painOldHealth = health;
+    }
+    return this.lastCalc;
+  }
+
+  private updateFaceWidget(player: Player, stRandom: number): void {
+    if (this.facePriority < 10 && player.health <= 0) {
+      this.facePriority = 9;
+      this.faceIndex = ST_DEADFACE;
+      this.faceCount = 1;
+    }
+
+    if (this.facePriority < 9 && player.bonuscount) {
+      let doEvilGrin = false;
+      const n = Math.min(this.oldWeaponsOwned.length, player.weaponowned.length);
+      for (let i = 0; i < n; ++i) {
+        if (this.oldWeaponsOwned[i] !== player.weaponowned[i]) {
+          doEvilGrin = true;
+          this.oldWeaponsOwned[i] = player.weaponowned[i]!;
+        }
+      }
+      if (doEvilGrin) {
+        this.facePriority = 8;
+        this.faceCount = ST_EVILGRINCOUNT;
+        this.faceIndex = this.calcPainOffset(player) + ST_EVILGRINOFFSET;
+      }
+    }
+
+    if (
+      this.facePriority < 8 &&
+      player.damagecount &&
+      player.attacker !== null &&
+      player.mo !== null &&
+      player.attacker !== player.mo
+    ) {
+      this.facePriority = 7;
+      if (player.health - this.oldHealth > ST_MUCHPAIN) {
+        this.faceCount = ST_TURNCOUNT;
+        this.faceIndex = this.calcPainOffset(player) + ST_OUCHOFFSET;
+      } else {
+        const badguyangle = Collision.angleTo(player.mo.x, player.mo.y, player.attacker.x, player.attacker.y);
+        let diffang: number;
+        let turnRight: boolean;
+        if (asU32(badguyangle) > asU32(player.mo.angle)) {
+          diffang = asU32(badguyangle - player.mo.angle);
+          turnRight = diffang > asU32(ANG180);
+        } else {
+          diffang = asU32(player.mo.angle - badguyangle);
+          turnRight = diffang <= asU32(ANG180);
+        }
+        this.faceCount = ST_TURNCOUNT;
+        this.faceIndex = this.calcPainOffset(player);
+        if (diffang < asU32(ANG45)) this.faceIndex += ST_RAMPAGEOFFSET;
+        else if (turnRight) this.faceIndex += ST_TURNOFFSET;
+        else this.faceIndex += ST_TURNOFFSET + 1;
+      }
+    }
+
+    if (this.facePriority < 7 && player.damagecount) {
+      if (player.health - this.oldHealth > ST_MUCHPAIN) {
+        this.facePriority = 7;
+        this.faceCount = ST_TURNCOUNT;
+        this.faceIndex = this.calcPainOffset(player) + ST_OUCHOFFSET;
+      } else {
+        this.facePriority = 6;
+        this.faceCount = ST_TURNCOUNT;
+        this.faceIndex = this.calcPainOffset(player) + ST_RAMPAGEOFFSET;
+      }
+    }
+
+    if (this.facePriority < 6) {
+      if (player.attackdown) {
+        if (this.lastAttackDown === -1) this.lastAttackDown = ST_RAMPAGEDELAY;
+        else {
+          this.lastAttackDown--;
+          if (this.lastAttackDown === 0) {
+            this.facePriority = 5;
+            this.faceIndex = this.calcPainOffset(player) + ST_RAMPAGEOFFSET;
+            this.faceCount = 1;
+            this.lastAttackDown = 1;
+          }
+        }
+      } else this.lastAttackDown = -1;
+    }
+
+    if (this.facePriority < 5 && (player.cheats & CF_GODMODE) !== 0) {
+      this.facePriority = 4;
+      this.faceIndex = ST_GODFACE;
+      this.faceCount = 1;
+    }
+
+    if (this.faceCount === 0) {
+      this.faceIndex = this.calcPainOffset(player) + (stRandom % 3);
+      this.faceCount = ST_STRAIGHTFACECOUNT;
+      this.facePriority = 0;
+    }
+    this.faceCount--;
   }
 
   draw(fb: Uint8Array, player: Player, showMessages = true): void {
@@ -113,15 +277,7 @@ export class Status {
       else drawPatch(fb, x, y, this.armsOff[i]!);
     }
 
-    const health = Math.min(100, Math.max(0, Math.trunc(player.health)));
-    const pain = player.health <= 0 ? 4 : Math.min(4, intdiv((100 - health) * 5, 101));
-    if (player.health <= 0) {
-      drawPatch(fb, Status.FACE_X, Status.FACE_Y, this.deadFace ?? this.faces[4]!);
-    } else if ((player.cheats & CF_GODMODE) !== 0) {
-      drawPatch(fb, Status.FACE_X, Status.FACE_Y, this.godFace);
-    } else {
-      drawPatch(fb, Status.FACE_X, Status.FACE_Y, this.faces[pain]!);
-    }
+    drawPatch(fb, Status.FACE_X, Status.FACE_Y, this.facePatch(this.faceIndex));
 
     const slots: Array<[number, number]> = [
       [IT_BLUECARD, IT_BLUESKULL],

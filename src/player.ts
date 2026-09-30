@@ -107,6 +107,7 @@ export class Player {
   usedown = false;
   damagecount = 0;
   bonuscount = 0;
+  attacker: Mobj | null = null;
   extralight = 0;
   refire = 0;
   killcount = 0;
