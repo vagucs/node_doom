@@ -2,6 +2,8 @@
 
 ![DOOM running on Node.js CLI with SDL2](screenshot/doom.png)
 
+**Video:** [DOOM running in Node.js](https://youtu.be/EkCBuIzdHHc)
+
 DOOM generic ported from Harbour to **Node.js 20+ CLI + SDL2** (koffi). Not a web app, not Electron.
 
 By **Wagner Nunes da Silva**
