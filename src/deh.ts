@@ -11,7 +11,6 @@
  */
 
 import * as fs from "node:fs";
-import * as path from "node:path";
 import { TICRATE } from "./defs.ts";
 import type { Wad } from "./wad.ts";
 
@@ -186,11 +185,6 @@ export class Deh {
 
   loadAfterIwad(wad: Wad, iwadPath: string): void {
     if (!this.nodeh) {
-      const base = path.parse(iwadPath).name.toLowerCase();
-      if (base.startsWith("chex")) {
-        const sibling = path.join(path.dirname(iwadPath), "chex.deh");
-        if (fs.existsSync(sibling)) this.loadFile(sibling);
-      }
       for (let i = 0; i < wad.lumps.length; i++) {
         if (wad.lumps[i]!.name === "DEHACKED") this.loadLump(wad, i);
       }

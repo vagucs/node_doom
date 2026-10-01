@@ -129,7 +129,18 @@ export class Sprites {
           }
         }
       }
-      if (maxFrame >= 0) result[spriteName] = frames.slice(0, maxFrame + 1);
+      if (maxFrame >= 0) {
+        for (let frameIndex = 0; frameIndex <= maxFrame; frameIndex++) {
+          const slot = frames[frameIndex]!;
+          if (slot.rotate === -1) {
+            process.stderr.write(
+              `R_InitSprites: No patches found for ${spriteName} frame ${String.fromCharCode(65 + frameIndex)}\n`,
+            );
+            slot.rotate = 0;
+          }
+        }
+        result[spriteName] = frames.slice(0, maxFrame + 1);
+      }
     }
     return result;
   }
