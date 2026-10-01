@@ -39,6 +39,7 @@ export class Sound {
   private mciSend: MciFunc | null = null;
   output: Video | null = null;
   enabled = true;
+  musicEnabled = true;
   sfxVolume = 8;
   musicVolume = 8;
 
@@ -94,8 +95,17 @@ export class Sound {
     this.changeMusic(name, true);
   }
 
+  static doom2Music(): string[] {
+    return Sound.DOOM2_MUSIC;
+  }
+
+  hasMusic(name: string): boolean {
+    if (this.wad === null || name === "") return false;
+    return this.wad.checkNumForName("D_" + name.slice(0, 6).toUpperCase()) >= 0;
+  }
+
   changeMusic(name: string, looping = true): void {
-    if (this.wad === null || name === "" || name.toLowerCase() === this.musicName) return;
+    if (!this.musicEnabled || this.wad === null || name === "" || name.toLowerCase() === this.musicName) return;
     const number = this.wad.checkNumForName("D_" + name.slice(0, 6).toUpperCase());
     if (number < 0) return;
     const midi = mus2mid(this.wad.cacheLumpNum(number));

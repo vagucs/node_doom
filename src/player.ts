@@ -18,6 +18,7 @@ import {
   AM_MISL,
   AM_SHELL,
   ANG90,
+  ANG180,
   BT_ATTACK,
   BT_CHANGE,
   BT_USE,
@@ -26,17 +27,27 @@ import {
   FINEANGLES,
   FINEMASK,
   FRACUNIT,
-  FRICTION,
-  GRAVITY,
+  INFRATICS,
+  INVERSECOLORMAP,
+  INVISTICS,
+  INVULNTICS,
+  IRONTICS,
   MAXBOB,
+  MAXHEALTH,
   MELEERANGE,
   MF_NOCLIP,
+  MF_SHADOW,
   MF_SHOOTABLE,
   MF_SOLID,
   MISSILERANGE,
   PST_DEAD,
   PST_LIVE,
-  STOPSPEED,
+  PST_REBORN,
+  PW_INFRARED,
+  PW_INVISIBILITY,
+  PW_INVULNERABILITY,
+  PW_IRONFEET,
+  PW_STRENGTH,
   TICRATE,
   VIEWHEIGHT,
   WP_BFG,
@@ -50,6 +61,7 @@ import {
   WP_SHOTGUN,
   WP_SUPERSHOTGUN,
 } from "./defs.ts";
+import { deh, dehString } from "./deh.ts";
 import { Enemy } from "./enemy.ts";
 import type { Game } from "./game.ts";
 import { Mobj } from "./mobj.ts";
@@ -109,6 +121,7 @@ export class Player {
   bonuscount = 0;
   attacker: Mobj | null = null;
   extralight = 0;
+  fixedcolormap = 0;
   refire = 0;
   killcount = 0;
   itemcount = 0;
@@ -122,6 +135,7 @@ export class Player {
   pspriteBody = "";
   pspriteFlash = "";
   flashTics = 0;
+  powers = [0, 0, 0, 0, 0, 0];
 
   constructor(mo: Mobj | null = null, cheats = 0) {
     this.mo = mo;
@@ -130,8 +144,39 @@ export class Player {
   }
 
   setMessage(text: string): void {
-    this.message = text;
+    this.message = dehString(text);
     this.messageTics = 4 * TICRATE;
+  }
+
+  static givePower(p: Player, power: number): boolean {
+    if (power === PW_INVULNERABILITY) {
+      p.powers[power] = INVULNTICS;
+      return true;
+    }
+    if (power === PW_INVISIBILITY) {
+      p.powers[power] = INVISTICS;
+      if (p.mo) p.mo.flags |= MF_SHADOW;
+      return true;
+    }
+    if (power === PW_INFRARED) {
+      p.powers[power] = INFRATICS;
+      return true;
+    }
+    if (power === PW_IRONFEET) {
+      p.powers[power] = IRONTICS;
+      return true;
+    }
+    if (power === PW_STRENGTH) {
+      if (p.health < MAXHEALTH) {
+        p.health = Math.min(MAXHEALTH, p.health + 100);
+        if (p.mo) p.mo.health = p.health;
+      }
+      p.powers[power] = 1;
+      return true;
+    }
+    if (p.powers[power]) return false;
+    p.powers[power] = 1;
+    return true;
   }
 
   static spawnPlayer(world: World, start: MapThing, cheats = 0): Player {
@@ -148,9 +193,15 @@ export class Player {
     });
     const p = new Player(mo, cheats);
     mo.player = p;
+    p.health = deh.initialHealth;
+    mo.health = deh.initialHealth;
+    p.ammo = [deh.initialBullets, 0, 0, 0];
+    p.maxammo = [...deh.maxammo];
     if (cheats & 1) mo.flags |= MF_NOCLIP;
     p.viewz = mo.z + VIEWHEIGHT;
+    mo.lastlook = Enemy.publicRandom() % 4;
     world.mobjs.push(mo);
+    Collision.setThingPosition(world, mo);
     return p;
   }
 
@@ -185,32 +236,11 @@ export class Player {
   }
 
   static xyMovement(world: World, mo: Mobj, game: Game): void {
-    if (mo.momx === 0 && mo.momy === 0) return;
-    Collision.slideMove(world, mo, mo.momx, mo.momy, game);
-    if (
-      mo.player &&
-      Math.abs(mo.momx) < STOPSPEED &&
-      Math.abs(mo.momy) < STOPSPEED &&
-      mo.player.cmd.forwardmove === 0 &&
-      mo.player.cmd.sidemove === 0
-    ) {
-      mo.momx = mo.momy = 0;
-      return;
-    }
-    mo.momx = fixedMul(mo.momx, FRICTION);
-    mo.momy = fixedMul(mo.momy, FRICTION);
+    Enemy.pXyMovement(world, mo, game);
   }
 
-  static zMovement(mo: Mobj): void {
-    mo.z += mo.momz;
-    if (mo.z <= mo.floorz) {
-      mo.z = mo.floorz;
-      mo.momz = 0;
-    } else mo.momz -= GRAVITY;
-    if (mo.z + mo.height > mo.ceilingz) {
-      mo.z = mo.ceilingz - mo.height;
-      mo.momz = 0;
-    }
+  static zMovement(mo: Mobj, world: World, game: Game): void {
+    Enemy.mobjZ(mo, world, game);
   }
 
   private static specialSector(world: World, p: Player, game: Game, time: number): void {
@@ -222,25 +252,44 @@ export class Player {
       sec.special = 0;
       return;
     }
-    if ([5, 7, 4, 16, 11].includes(sec.special) && (time & 0x1f) === 0) {
-      const damage = sec.special === 7 ? 5 : sec.special === 5 ? 10 : 20;
-      game.damageMobj(mo, null, damage);
-      if (sec.special === 11 && p.health <= 10 && game.specials) game.specials.exitRequested = true;
+    if ([5, 7, 4, 16, 11].includes(sec.special)) {
+      if (p.powers[PW_IRONFEET]) return;
+      if ((time & 0x1f) === 0) {
+        const damage = sec.special === 7 ? 5 : sec.special === 5 ? 10 : 20;
+        game.damageMobj(mo, null, damage);
+        if (sec.special === 11 && p.health <= 10 && game.specials) game.specials.exitRequested = true;
+      }
     }
+  }
+
+  private static deathThink(world: World, p: Player, game: Game, leveltime: number): void {
+    const mo = p.mo!;
+    const cmd = p.cmd;
+    if (p.viewheight > 6 * FRACUNIT) p.viewheight -= FRACUNIT;
+    if (p.viewheight < 6 * FRACUNIT) p.viewheight = 6 * FRACUNIT;
+    p.deltaviewheight = 0;
+    Player.xyMovement(world, mo, game);
+    Player.zMovement(mo, world, game);
+    Player.calcHeight(p, leveltime);
+    if (p.attacker !== null && p.attacker !== mo) {
+      const angle = Collision.angleTo(mo.x, mo.y, p.attacker.x, p.attacker.y);
+      const delta = asU32(angle - mo.angle);
+      const ang5 = intdiv(ANG90, 18);
+      if (delta < asU32(ang5) || delta > asU32(-ang5)) {
+        mo.angle = angle;
+        if (p.damagecount) p.damagecount--;
+      } else if (delta < asU32(ANG180)) mo.angle = asU32(mo.angle + ang5);
+      else mo.angle = asU32(mo.angle - ang5);
+    } else if (p.damagecount) p.damagecount--;
+    Player.weaponThink(p, game);
+    if (cmd.buttons & BT_USE) p.playerstate = PST_REBORN;
   }
 
   static playerThink(world: World, p: Player, game: Game, leveltime: number): void {
     const mo = p.mo!;
     const cmd = p.cmd;
     if (p.playerstate === PST_DEAD) {
-      if (p.viewheight > 6 * FRACUNIT) p.viewheight -= FRACUNIT;
-      Player.calcHeight(p, leveltime);
-      if (cmd.buttons & BT_USE) {
-        p.playerstate = PST_LIVE;
-        p.health = mo.health = 100;
-        mo.alive = true;
-        mo.flags |= MF_SHOOTABLE | MF_SOLID;
-      }
+      Player.deathThink(world, p, game, leveltime);
       return;
     }
     mo.angle = asU32(mo.angle + (cmd.angleturn << 16));
@@ -249,7 +298,7 @@ export class Player {
       if (cmd.sidemove) Player.thrust(mo, asU32(mo.angle - ANG90), cmd.sidemove * 2048);
     }
     Player.xyMovement(world, mo, game);
-    Player.zMovement(mo);
+    Player.zMovement(mo, world, game);
     Player.calcHeight(p, leveltime);
     Player.specialSector(world, p, game, leveltime);
     if (cmd.buttons & BT_USE) {
@@ -264,6 +313,19 @@ export class Player {
         p.pendingweapon = w;
     }
     Player.weaponThink(p, game);
+    if (p.powers[PW_STRENGTH]) p.powers[PW_STRENGTH]! += 1;
+    if (p.powers[PW_INVULNERABILITY]) p.powers[PW_INVULNERABILITY]! -= 1;
+    if (p.powers[PW_INVISIBILITY]) {
+      p.powers[PW_INVISIBILITY]! -= 1;
+      if (p.powers[PW_INVISIBILITY] === 0 && p.mo) p.mo.flags &= ~MF_SHADOW;
+    }
+    if (p.powers[PW_INFRARED]) p.powers[PW_INFRARED]! -= 1;
+    if (p.powers[PW_IRONFEET]) p.powers[PW_IRONFEET]! -= 1;
+    const inv = p.powers[PW_INVULNERABILITY]!;
+    const ir = p.powers[PW_INFRARED]!;
+    if (inv) p.fixedcolormap = inv > 4 * 32 || (inv & 8) !== 0 ? INVERSECOLORMAP : 0;
+    else if (ir) p.fixedcolormap = ir > 4 * 32 || (ir & 8) !== 0 ? 1 : 0;
+    else p.fixedcolormap = 0;
     if (p.damagecount) p.damagecount--;
     if (p.bonuscount) p.bonuscount--;
     if (p.messageTics && --p.messageTics <= 0) p.message = "";
@@ -351,14 +413,19 @@ export class Player {
   }
 
   private static weaponThink(p: Player, game: Game): void {
+    if (p.playerstate === PST_DEAD || p.health <= 0) {
+      Player.lowerWeapon(p, game);
+      return;
+    }
     const firing = (p.cmd.buttons & BT_ATTACK) !== 0;
     const ammoMap = Player.weaponAmmo();
     const ammo = ammoMap[p.readyweapon] ?? null;
-    const can = ammo === null || p.ammo[ammo]! > 0;
+    const need = Player.ammoNeeded(p.readyweapon);
+    const can = ammo === null || p.ammo[ammo]! >= need;
     if (!can) {
       for (const w of [WP_PISTOL, WP_SHOTGUN, WP_CHAINGUN, WP_MISSILE, WP_PLASMA, WP_BFG, WP_FIST]) {
         const a = ammoMap[w] ?? null;
-        if (p.weaponowned[w] && (a === null || p.ammo[a]! > 0)) {
+        if (p.weaponowned[w] && (a === null || p.ammo[a]! >= Player.ammoNeeded(w))) {
           p.pendingweapon = w;
           break;
         }
@@ -411,6 +478,7 @@ export class Player {
     p.pspriteSy += Sprites.LOWERSPEED;
     if (p.pspriteSy < Sprites.WEAPONBOTTOM) return;
     p.pspriteSy = Sprites.WEAPONBOTTOM;
+    if (p.playerstate === PST_DEAD || p.health <= 0) return;
     if (p.pendingweapon !== WP_NOCHANGE) {
       p.readyweapon = p.pendingweapon;
       p.pendingweapon = WP_NOCHANGE;
@@ -489,42 +557,75 @@ export class Player {
     }
   }
 
+  private static ammoNeeded(weapon: number): number {
+    return weapon === WP_BFG ? deh.bfgCellsPerShot : 1;
+  }
+
+  private static gunShot(p: Player, game: Game, accurate: boolean): boolean {
+    const mo = p.mo!;
+    const slope = Collision.bulletSlope(game.world!, mo);
+    const damage = 5 * ((Enemy.publicRandom() % 3) + 1);
+    let angle = mo.angle;
+    if (!accurate) angle = asU32(angle + (Enemy.publicRandom() - Enemy.publicRandom()) * 262144);
+    return Collision.lineAttack(game.world!, mo, damage, game, MISSILERANGE, angle, slope);
+  }
+
   private static doShot(p: Player, game: Game, ammo: number | null): void {
+    const need = Player.ammoNeeded(p.readyweapon);
     if (ammo !== null) {
-      if (p.ammo[ammo]! <= 0) return;
-      p.ammo[ammo]!--;
+      if (p.ammo[ammo]! < need) return;
+      p.ammo[ammo]! -= need;
     }
-    const shots: Record<number, [number, number, string | null]> = {
-      [WP_FIST]: [2, MELEERANGE, null],
-      [WP_CHAINSAW]: [3, MELEERANGE, "sawful"],
-      [WP_PISTOL]: [5, MISSILERANGE, "pistol"],
-      [WP_SHOTGUN]: [7, MISSILERANGE, "shotgn"],
-      [WP_SUPERSHOTGUN]: [8, MISSILERANGE, "dshtgn"],
-      [WP_CHAINGUN]: [5, MISSILERANGE, "pistol"],
-      [WP_MISSILE]: [20, MISSILERANGE, "rlaunc"],
-      [WP_PLASMA]: [5, MISSILERANGE, "plasma"],
-      [WP_BFG]: [100, MISSILERANGE, "bfg"],
-    };
-    const [dmg, range0, sfx] = shots[p.readyweapon] ?? [5, MISSILERANGE, "pistol"];
-    let range = range0;
+    const mo = p.mo;
+    const weapon = p.readyweapon;
     let hit = false;
-    if (p.mo) {
-      const pellets = p.readyweapon === WP_SHOTGUN ? 7 : p.readyweapon === WP_SUPERSHOTGUN ? 20 : 1;
-      let shot = dmg * ((game.leveltime & 7) + 1);
-      if (p.readyweapon === WP_CHAINSAW) {
-        shot = 2 * ((game.leveltime % 10) + 1);
-        range = MELEERANGE + 1;
+    if (mo && [WP_MISSILE, WP_PLASMA, WP_BFG].includes(weapon)) {
+      if (weapon === WP_PLASMA) void (Enemy.publicRandom() & 1);
+      if (weapon === WP_MISSILE) {
+        Enemy.spawnPlayerMissile(game.world!, mo, "MISL", 20 * FRACUNIT, 20, "rocket");
+        game.startSound("rlaunc");
+      } else if (weapon === WP_PLASMA) {
+        Enemy.spawnPlayerMissile(game.world!, mo, "PLSS", 25 * FRACUNIT, 5, "plasma");
+        game.startSound("plasma");
+      } else {
+        Enemy.spawnPlayerMissile(game.world!, mo, "BFS1", 25 * FRACUNIT, 100, "bfg");
+        game.startSound("bfg");
       }
-      for (let i = 0; i < pellets; i++)
-        if (Collision.lineAttack(game.world!, p.mo, shot, game, range)) hit = true;
+      p.refire++;
+      p.attackdown = true;
+      Enemy.noiseAlert(game.world!, mo, game);
+      return;
     }
-    if (p.readyweapon === WP_CHAINSAW) game.startSound(hit ? "sawhit" : "sawful");
-    else if (p.readyweapon === WP_FIST) {
+    if (mo && weapon === WP_FIST) {
+      let damage = ((Enemy.publicRandom() % 10) + 1) * 2;
+      if (p.powers[PW_STRENGTH]) damage *= 10;
+      const angle = asU32(mo.angle + (Enemy.publicRandom() - Enemy.publicRandom()) * 262144);
+      hit = Collision.lineAttack(game.world!, mo, damage, game, MELEERANGE, angle);
       if (hit) game.startSound("punch");
-    } else if (sfx) game.startSound(sfx);
+    } else if (mo && weapon === WP_CHAINSAW) {
+      const damage = 2 * ((Enemy.publicRandom() % 10) + 1);
+      const angle = asU32(mo.angle + (Enemy.publicRandom() - Enemy.publicRandom()) * 262144);
+      hit = Collision.lineAttack(game.world!, mo, damage, game, MELEERANGE + 1, angle);
+      game.startSound(hit ? "sawhit" : "sawful");
+    } else if (mo && weapon === WP_SHOTGUN) {
+      game.startSound("shotgn");
+      for (let i = 0; i < 7; i++) if (Player.gunShot(p, game, false)) hit = true;
+    } else if (mo && weapon === WP_SUPERSHOTGUN) {
+      game.startSound("dshtgn");
+      const slope = Collision.bulletSlope(game.world!, mo);
+      for (let i = 0; i < 20; i++) {
+        const damage = 5 * ((Enemy.publicRandom() % 3) + 1);
+        const angle = asU32(mo.angle + (Enemy.publicRandom() - Enemy.publicRandom()) * 524288);
+        const pellet = slope + (Enemy.publicRandom() - Enemy.publicRandom()) * 32;
+        if (Collision.lineAttack(game.world!, mo, damage, game, MISSILERANGE, angle, pellet)) hit = true;
+      }
+    } else if (mo) {
+      game.startSound("pistol");
+      Player.gunShot(p, game, p.refire === 0);
+    }
     p.refire++;
     p.attackdown = true;
-    Enemy.noiseAlert(game.world!, p.mo, game);
+    if (mo) Enemy.noiseAlert(game.world!, mo, game);
   }
 
   static currentWeaponPatch(p: Player): string {

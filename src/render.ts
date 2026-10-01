@@ -133,6 +133,7 @@ export class Renderer {
   viewcos = 0;
   viewsin = 0;
   extralight = 0;
+  fixedcolormap: Buffer | null = null;
   private curline: any = null;
   private frontsector: any = null;
   private backsector: any = null;
@@ -358,7 +359,7 @@ export class Renderer {
     return 64 * FRACUNIT;
   }
 
-  setupFrame(x: number, y: number, z: number, angle: number, extraLight = 0): void {
+  setupFrame(x: number, y: number, z: number, angle: number, extraLight = 0, fixedcolormap = 0): void {
     this.viewx = x;
     this.viewy = y;
     this.viewz = z;
@@ -366,6 +367,7 @@ export class Renderer {
     this.viewsin = fineSin(this.viewangle);
     this.viewcos = fineCos(this.viewangle);
     this.extralight = extraLight;
+    this.fixedcolormap = fixedcolormap ? this.res.colormap(fixedcolormap) : null;
     const ang = ushr(asU32(this.viewangle - ANG90), ANGLETOFINESHIFT) & FINEMASK;
     this.basexscale = fixedDiv(finesine[(ang + intdiv(FINEANGLES, 4)) & FINEMASK]!, this.centerxfrac || 1);
     this.baseyscale = -fixedDiv(finesine[ang]!, this.centerxfrac || 1);
@@ -810,7 +812,7 @@ export class Renderer {
         const tan = finetangent[angle & (intdiv(FINEANGLES, 2) - 1)]!;
         texturecolumn = shar(this.rw_offset - fixedMul(tan, this.rw_distance), FRACBITS);
         const index = Math.min(MAXLIGHTSCALE - 1, ushr(this.rw_scale, LIGHTSCALESHIFT));
-        this.dc_colormap = this.res.colormap(this.walllights[index]!);
+        this.dc_colormap = this.fixedcolormap ?? this.res.colormap(this.walllights[index]!);
         this.dc_x = this.rw_x;
         this.dc_iscale = this.rw_scale !== 0 ? intdiv(0xffffffff, this.rw_scale) : 0;
       }
@@ -940,7 +942,7 @@ export class Renderer {
       if (tcol === Renderer.SHRT_MAX) continue;
       let index = spryscale > 0 ? ushr(spryscale, LIGHTSCALESHIFT) : 0;
       index = Math.min(MAXLIGHTSCALE - 1, index);
-      this.dc_colormap = this.res.colormap(walllights[index]!);
+      this.dc_colormap = this.fixedcolormap ?? this.res.colormap(walllights[index]!);
       this.dc_x = x;
       this.dc_iscale = spryscale !== 0 ? intdiv(0xffffffff, spryscale) : 0;
       this.dc_texturemid = texturemid;
@@ -1024,7 +1026,7 @@ export class Renderer {
           const xfrac = this.viewx + fixedMul(finesine[(ang + intdiv(FINEANGLES, 4)) & FINEMASK]!, length);
           const yfrac = -this.viewy - fixedMul(finesine[ang]!, length);
           const index = Math.min(MAXLIGHTZ - 1, ushr(distance, LIGHTZSHIFT));
-          const cm = this.res.colormap(planezlight[index]!);
+          const cm = this.fixedcolormap ?? this.res.colormap(planezlight[index]!);
           const spot = ((xfrac >> 16) & 63) | ((yfrac >> 10) & 0x0fc0);
           const source = spot < flat.length ? flat[spot]! : 0;
           const pix = cm[source]!;

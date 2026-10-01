@@ -18,10 +18,12 @@ import {
   FINEMASK,
   FRACBITS,
   FRACUNIT,
+  MF_SHADOW,
   SCREENWIDTH,
   SIL_BOTTOM,
   SIL_TOP,
 } from "./defs.ts";
+import { FF_FRAMEMASK } from "./info.ts";
 import type { Mobj } from "./mobj.ts";
 import type { Player } from "./player.ts";
 import type { Resources } from "./rdata.ts";
@@ -72,6 +74,11 @@ export class Sprites {
 
   private static readonly MINZ = 4 * FRACUNIT;
   private static readonly MAX_SPRITE_FRAMES = 29;
+  private static readonly FUZZ_DIR = [
+    1, -1, 1, -1, 1, 1, -1, 1, 1, -1, 1, 1, 1, -1, 1, 1, 1, -1, -1, -1, -1, 1, -1, -1, 1,
+    1, 1, 1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, -1, -1, -1, 1, 1, 1, 1, -1, 1, 1, -1, 1,
+  ];
+  private static fuzzPos = 0;
 
   /** R_InitSpriteDefs: parse S_START..S_END, including mirrored POSSA2A8 lumps. */
   static initSpriteDefs(wad: {
@@ -167,7 +174,7 @@ export class Sprites {
     const base = name.slice(0, 4).toUpperCase();
     const frames = resources.sprites[base] ?? null;
     if (!frames) return null;
-    const frameIndex = frame & 31;
+    const frameIndex = frame & FF_FRAMEMASK;
     if (frameIndex >= frames.length) return null;
     const spriteFrame = frames[frameIndex]!;
     let lump: number;
@@ -396,7 +403,8 @@ export class Sprites {
     for (let column = 0; column < Math.max(1, patchWidth); ++column) {
       columnOffsets[column] = u32(patch, 8 + column * 4);
     }
-    const colormap = renderer.res.colormap(0);
+    const fuzz = !!(sprite.mo && (sprite.mo.flags & MF_SHADOW));
+    const colormap = fuzz ? renderer.res.colormap(6) : renderer.fixedcolormap ?? renderer.res.colormap(0);
     const patchLength = patch.length;
     let frac = sprite.startfrac;
     for (let x = sprite.x1; x <= sprite.x2; ++x) {
@@ -414,21 +422,29 @@ export class Sprites {
           let yh = (bottomScreen - 1) >> FRACBITS;
           yl = Math.max(yl, clipTop[x]! + 1, 0);
           yh = Math.min(yh, clipBottom[x]! - 1, renderer.viewheight - 1);
+          if (fuzz) {
+            yl = Math.max(yl, 1);
+            yh = Math.min(yh, renderer.viewheight - 2);
+          }
           if (yl <= yh) {
             let texfrac = fixedMul((yl << FRACBITS) - topScreen, yIscale);
             texfrac = Math.max(0, texfrac);
             for (let y = yl; y <= yh; ++y) {
-              const index = texfrac >> FRACBITS;
-              if (index >= 0 && index < length) {
-                const pixel = patch[source + index]!;
-                const value = pixel < colormap.length ? colormap[pixel]! : pixel;
-                if (renderer.detailshift !== 0) {
-                  const xx = x << 1;
-                  const offset = renderer.ylookup[y]! + renderer.columnofs[xx]!;
-                  fb[offset] = value;
-                  fb[offset + 1] = value;
-                } else {
-                  fb[renderer.ylookup[y]! + renderer.columnofs[x]!] = value;
+              if (fuzz) {
+                Sprites.drawFuzzPixel(renderer, fb, x, y, colormap);
+              } else {
+                const index = texfrac >> FRACBITS;
+                if (index >= 0 && index < length) {
+                  const pixel = patch[source + index]!;
+                  const value = pixel < colormap.length ? colormap[pixel]! : pixel;
+                  if (renderer.detailshift !== 0) {
+                    const xx = x << 1;
+                    const offset = renderer.ylookup[y]! + renderer.columnofs[xx]!;
+                    fb[offset] = value;
+                    fb[offset + 1] = value;
+                  } else {
+                    fb[renderer.ylookup[y]! + renderer.columnofs[x]!] = value;
+                  }
                 }
               }
               texfrac += yIscale;
@@ -439,5 +455,22 @@ export class Sprites {
       }
       frac += iscale;
     }
+  }
+
+  private static drawFuzzPixel(
+    renderer: Renderer,
+    fb: Uint8Array,
+    x: number,
+    y: number,
+    colormap: Buffer | Uint8Array,
+  ): void {
+    const dest = renderer.ylookup[y]! + renderer.columnofs[renderer.detailshift !== 0 ? x << 1 : x]!;
+    let src = dest + Sprites.FUZZ_DIR[Sprites.fuzzPos]! * SCREENWIDTH;
+    Sprites.fuzzPos = (Sprites.fuzzPos + 1) % Sprites.FUZZ_DIR.length;
+    if (src < 0 || src >= fb.length) src = dest;
+    const pixel = fb[src]! & 255;
+    const value = pixel < colormap.length ? colormap[pixel]! : pixel;
+    fb[dest] = value;
+    if (renderer.detailshift !== 0 && dest + 1 < fb.length) fb[dest + 1] = value;
   }
 }

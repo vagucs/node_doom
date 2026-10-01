@@ -17,6 +17,7 @@ import {
   ML_DONTDRAW,
   ML_MAPPED,
   ML_SECRET,
+  PW_ALLMAP,
   PLAYER_RADIUS,
   SBARHEIGHT,
   SCREENHEIGHT,
@@ -395,20 +396,22 @@ export class AmMap {
 
   private drawWalls(fb: Uint8Array, game: Game): void {
     for (const line of game.world!.lines) {
-      if (!this.cheating && ((line.flags & ML_MAPPED) === 0 || (line.flags & ML_DONTDRAW) !== 0)) {
-        continue;
+      if (this.cheating || (line.flags & ML_MAPPED) !== 0) {
+        if ((line.flags & ML_DONTDRAW) !== 0 && !this.cheating) continue;
+        let color: number | null = null;
+        if (line.backsector === null) {
+          color = AmMap.REDS;
+        } else if (line.frontsector !== null) {
+          if (line.special === 39) color = AmMap.REDS + intdiv(AmMap.RED_RANGE, 2);
+          else if ((line.flags & ML_SECRET) !== 0) color = AmMap.REDS;
+          else if (line.backsector.floorheight !== line.frontsector.floorheight) color = AmMap.BROWNS;
+          else if (line.backsector.ceilingheight !== line.frontsector.ceilingheight) color = AmMap.YELLOWS;
+          else if (this.cheating) color = AmMap.GRAYS;
+        }
+        if (color !== null) this.line(fb, line.v1!.x, line.v1!.y, line.v2!.x, line.v2!.y, color);
+      } else if (game.player!.powers[PW_ALLMAP] && (line.flags & ML_DONTDRAW) === 0) {
+        this.line(fb, line.v1!.x, line.v1!.y, line.v2!.x, line.v2!.y, AmMap.GRAYS + 3);
       }
-      let color: number | null = null;
-      if (line.backsector === null) {
-        color = AmMap.REDS;
-      } else if (line.frontsector !== null) {
-        if (line.special === 39) color = AmMap.REDS + intdiv(AmMap.RED_RANGE, 2);
-        else if ((line.flags & ML_SECRET) !== 0) color = AmMap.REDS;
-        else if (line.backsector.floorheight !== line.frontsector.floorheight) color = AmMap.BROWNS;
-        else if (line.backsector.ceilingheight !== line.frontsector.ceilingheight) color = AmMap.YELLOWS;
-        else if (this.cheating) color = AmMap.GRAYS;
-      }
-      if (color !== null) this.line(fb, line.v1!.x, line.v1!.y, line.v2!.x, line.v2!.y, color);
     }
   }
 

@@ -12,7 +12,7 @@
 
 import { GS_LEVEL, HU_FONTEND, HU_FONTSTART, LOADSAVEEMPTY, SAVESTRINGSIZE } from "./defs.ts";
 import type { Game } from "./game.ts";
-import { BACKSPACE, DOWN, ESC, F2, F3, isMinus, isPlus, KP_ENTER, LEFT, RETURN, RIGHT, UP } from "./keys.ts";
+import { BACKSPACE, DOWN, ESC, F1, F2, F3, isMinus, isPlus, KP_ENTER, LEFT, RETURN, RIGHT, UP } from "./keys.ts";
 import { Saveg } from "./saveg.ts";
 import type { Sound } from "./sound.ts";
 import { drawPatch, patchSize } from "./vvideo.ts";
@@ -197,6 +197,10 @@ export class Menu {
       this.action("loadgame", 0);
       return true;
     }
+    if (key === F1) {
+      this.openHelp();
+      return true;
+    }
     if (!this.active) {
       if (key === ESC) {
         this.start();
@@ -341,6 +345,16 @@ export class Menu {
     this.message = message;
     this.confirm = true;
     this.messageAction = action;
+  }
+
+  private openHelp(): void {
+    this.active = true;
+    this.message = null;
+    this.enteringSave = false;
+    this.menus["read1"]!.lastOn = 0;
+    this.screen = "read1";
+    this.itemOn = 0;
+    this.sound.play("swtchn");
   }
 
   private go(screen: string): void {

@@ -29,23 +29,40 @@ import {
   MF_COUNTITEM,
   MF_COUNTKILL,
   MF_DROPOFF,
+  MF_FLOAT,
+  MF_NOBLOCKMAP,
+  MF_NOGRAVITY,
+  MF_NOSECTOR,
   MF_PICKUP,
+  MF_SPAWNCEILING,
+  MF_SHADOW,
   MF_SHOOTABLE,
   MF_SOLID,
   MF_SPECIAL,
   MTF_AMBUSH,
+  PW_ALLMAP,
+  PW_INFRARED,
+  PW_INVISIBILITY,
+  PW_INVULNERABILITY,
+  PW_IRONFEET,
+  PW_STRENGTH,
   SK_EASY,
   SK_HARD,
   SK_NIGHTMARE,
   WP_BFG,
   WP_CHAINGUN,
   WP_CHAINSAW,
+  WP_FIST,
   WP_MISSILE,
   WP_PLASMA,
   WP_SHOTGUN,
   WP_SUPERSHOTGUN,
 } from "./defs.ts";
 import type { Game } from "./game.ts";
+import { deh } from "./deh.ts";
+import { Enemy } from "./enemy.ts";
+import { MI_FLAGS, MOBJINFO, MT_SKULL, mobjTypeForDoomednum } from "./info.ts";
+import { ONCEILINGZ, ONFLOORZ, Thinker } from "./thinker.ts";
 import { Player } from "./player.ts";
 import type { MapThing, World } from "./world.ts";
 
@@ -69,6 +86,7 @@ export interface MobjOpts {
   info?: unknown[] | null;
   alive?: boolean;
   reactiontime?: number;
+  lastlook?: number;
   target?: Mobj | null;
   movedir?: number;
   movecount?: number;
@@ -78,11 +96,14 @@ export interface MobjOpts {
   chaseTics?: number;
   justAttacked?: boolean;
   damage?: number;
+  missileKind?: string;
+  tracer?: Mobj | null;
 }
 
 type InfoEntry = [string, number, number, number, number, string, unknown];
 
 export class Mobj {
+  private static cachedInfo: Record<number, InfoEntry> | null = null;
   x: number;
   y: number;
   z: number;
@@ -102,6 +123,7 @@ export class Mobj {
   info: unknown[] | null;
   alive: boolean;
   reactiontime: number;
+  lastlook: number;
   target: Mobj | null;
   movedir: number;
   movecount: number;
@@ -116,6 +138,16 @@ export class Mobj {
   pickup: Mobj | null = null;
   attackKind = "hitscan";
   didFire = false;
+  missileKind = "";
+  tracer: Mobj | null = null;
+  easySkip = false;
+  istate = 0;
+  spawnpoint: unknown = null;
+  doomednum = -1;
+  bnext: Mobj | null = null;
+  bprev: Mobj | null = null;
+  blocklinked = false;
+  bindex = -1;
 
   constructor(opts: MobjOpts = {}) {
     this.x = opts.x ?? 0;
@@ -137,6 +169,7 @@ export class Mobj {
     this.info = opts.info ?? null;
     this.alive = opts.alive ?? true;
     this.reactiontime = opts.reactiontime ?? 0;
+    this.lastlook = opts.lastlook ?? 0;
     this.target = opts.target ?? null;
     this.movedir = opts.movedir ?? 8;
     this.movecount = opts.movecount ?? 0;
@@ -146,22 +179,27 @@ export class Mobj {
     this.chaseTics = opts.chaseTics ?? 0;
     this.justAttacked = opts.justAttacked ?? false;
     this.damage = opts.damage ?? 0;
+    this.missileKind = opts.missileKind ?? "";
+    this.tracer = opts.tracer ?? null;
     this.tmx = this.x;
     this.tmy = this.y;
   }
 
   static infoTable(): Record<number, InfoEntry> {
+    if (Mobj.cachedInfo) return Mobj.cachedInfo;
     const enemy = MF_SOLID | MF_SHOOTABLE;
     const special = MF_SPECIAL;
     const solid = MF_SOLID;
-    return {
+    Mobj.cachedInfo = {
       3004: ["POSSA1", 20, 56, 20, enemy, "enemy", "posit1"],
       9: ["SPOSA1", 20, 56, 30, enemy, "enemy", "posit1"],
       3001: ["TROOA1", 20, 56, 60, enemy, "enemy", "bgsit1"],
       3002: ["SARGA1", 30, 56, 150, enemy, "enemy", "sgtsit"],
+      58: ["SARGA1", 30, 56, 150, enemy | MF_SHADOW, "enemy", "sgtsit"],
+      65: ["CPOSA1", 20, 56, 70, enemy, "enemy", "posit2"],
       3003: ["BOSSA1", 24, 64, 1000, enemy, "enemy", "brssit"],
-      3005: ["HEADA1", 31, 56, 400, enemy, "enemy", "cacsit"],
-      3006: ["SKULA1", 16, 56, 100, enemy, "enemy", "sklatk"],
+      3005: ["HEADA1", 31, 56, 400, enemy | MF_FLOAT | MF_NOGRAVITY, "enemy", "cacsit"],
+      3006: ["SKULA1", 16, 56, 100, enemy | MF_FLOAT | MF_NOGRAVITY, "enemy", "sklatk"],
       16: ["CYBRA1", 40, 110, 4000, enemy, "enemy", "cybsit"],
       7: ["SPIDA1", 128, 100, 3000, enemy, "enemy", "spisit"],
       68: ["BSPIA1", 64, 64, 500, enemy, "enemy", "bspsit"],
@@ -169,9 +207,12 @@ export class Mobj {
       64: ["VILEA1", 20, 56, 700, enemy, "enemy", "vilsit"],
       66: ["SKELA1", 20, 56, 500, enemy, "enemy", "skesit"],
       67: ["FATTA1", 48, 64, 600, enemy, "enemy", "mansit"],
-      71: ["PAINA1", 31, 56, 400, enemy, "enemy", "pesit"],
+      71: ["PAINA1", 31, 56, 400, enemy | MF_FLOAT | MF_NOGRAVITY, "enemy", "pesit"],
       84: ["SSWVA1", 20, 56, 50, enemy, "enemy", "posit1"],
-      72: ["KEENA1", 16, 72, 100, enemy, "enemy", "keenpn"],
+      72: ["KEENA1", 16, 72, 100, enemy | MF_NOGRAVITY, "enemy", "keenpn"],
+      87: ["", 20, 32, 1000, MF_NOBLOCKMAP | MF_NOSECTOR, "bosstarget", null],
+      88: ["BBRNA1", 16, 16, 250, enemy, "enemy", "bossit"],
+      89: ["", 20, 32, 1000, MF_NOBLOCKMAP | MF_NOSECTOR, "braineye", null],
       2035: ["BAR1A0", 10, 42, 20, enemy, "enemy", null],
       2011: ["STIMA0", 20, 16, 0, special, "health", 10],
       2012: ["MEDIA0", 20, 16, 0, special, "health", 25],
@@ -239,9 +280,9 @@ export class Mobj {
       55: ["GOR1A0", 16, 16, 0, 0, "deco", null],
       56: ["GOR2A0", 16, 16, 0, 0, "deco", null],
       57: ["GOR3A0", 16, 16, 0, 0, "deco", null],
-      58: ["GOR4A0", 16, 16, 0, 0, "deco", null],
       59: ["GOR5A0", 16, 16, 0, 0, "deco", null],
     };
+    return Mobj.cachedInfo;
   }
 
   static skillBit(skill: number): number {
@@ -249,83 +290,37 @@ export class Mobj {
     return skill === SK_NIGHTMARE || skill >= SK_HARD ? 4 : 2;
   }
 
-  static spawnMapThings(world: World, skill: number): [number, number] {
+  static spawnMapThings(
+    world: World,
+    skill: number,
+    game?: { nomonsters?: boolean; player: Player | null } | null,
+  ): [number, number] {
     const bit = Mobj.skillBit(skill);
     let kills = 0;
     let items = 0;
     const table = Mobj.infoTable();
+    const nomonsters = Boolean(game?.nomonsters);
     for (const mt of world.things) {
-      if (mt.type === 14) {
-        const x = mt.x * FRACUNIT;
-        const y = mt.y * FRACUNIT;
-        const sec = Collision.pointInSubsector(world, x, y).sector!;
-        world.mobjs.push(
-          new Mobj({
-            x,
-            y,
-            z: sec.floorheight,
-            angle: asU32(intdiv(mt.angle, 45) * 0x20000000),
-            radius: 20 * FRACUNIT,
-            height: 16 * FRACUNIT,
-            floorz: sec.floorheight,
-            ceilingz: sec.ceilingheight,
-            flags: 0,
-            health: 1000,
-            type: 14,
-            sprite: "",
-            info: ["teleport", null],
-          }),
-        );
+      if (mt.type === 11) continue;
+      if (mt.type === 1 || mt.type === 2 || mt.type === 3 || mt.type === 4) {
+        if (mt.type === 1 && game != null && game.player == null) game.player = Player.spawnPlayer(world, mt);
         continue;
       }
-      if (
-        [1, 2, 3, 4, 11, 87, 89, 88].includes(mt.type) ||
-        !(mt.options & bit) ||
-        mt.options & 16 ||
-        table[mt.type] === undefined
-      )
-        continue;
-      const [sprite, rad, h, health, flags0, kind, extra] = table[mt.type]!;
-      let flags = flags0;
-      if (kind === "enemy" && mt.type !== 2035) {
-        flags |= MF_COUNTKILL;
-        kills++;
-      } else if (
-        ["bonus_h", "bonus_a", "soul", "mega", "berserk"].includes(kind) ||
-        (kind === "item" && extra !== "Radiation shielding")
-      ) {
-        flags |= MF_COUNTITEM;
-        items++;
-      }
-      if (mt.options & MTF_AMBUSH) flags |= MF_AMBUSH;
-      const frame =
-        sprite.length >= 5 && sprite[4]! >= "A" && sprite[4]! <= "]"
-          ? sprite.charCodeAt(4) - 65
-          : 0;
-      const x = mt.x * FRACUNIT;
-      const y = mt.y * FRACUNIT;
-      const sec = Collision.pointInSubsector(world, x, y).sector!;
-      world.mobjs.push(
-        new Mobj({
-          x,
-          y,
-          z: sec.floorheight,
-          angle: asU32(intdiv(mt.angle, 45) * 0x20000000),
-          radius: rad * FRACUNIT,
-          height: h * FRACUNIT,
-          floorz: sec.floorheight,
-          ceilingz: sec.ceilingheight,
-          flags,
-          health: health || 1000,
-          type: mt.type,
-          sprite: sprite.toUpperCase().slice(0, 4),
-          info: [kind, extra],
-          aiState: kind === "enemy" ? "look" : "",
-          frame,
-          tics: kind === "enemy" ? 10 : 0,
-          reactiontime: kind === "enemy" ? 8 : 0,
-        }),
-      );
+      if (!(mt.options & bit) || mt.options & 16) continue;
+      const typ = mobjTypeForDoomednum(mt.type);
+      if (typ < 0) continue;
+      const flags = Number(MOBJINFO[typ][MI_FLAGS]);
+      if (nomonsters && ((flags & MF_COUNTKILL) || typ === MT_SKULL)) continue;
+      const z = flags & MF_SPAWNCEILING ? ONCEILINGZ : ONFLOORZ;
+      const mo = Thinker.spawnMobj(world, mt.x * FRACUNIT, mt.y * FRACUNIT, z, typ, game as never);
+      if (mo.tics > 0) mo.tics = 1 + (Enemy.publicRandom() % mo.tics);
+      mo.angle = asU32(intdiv(mt.angle, 45) * 0x20000000);
+      mo.spawnpoint = mt;
+      if (mt.options & MTF_AMBUSH) mo.flags |= MF_AMBUSH;
+      const pickup = table[mt.type];
+      if (pickup) mo.info = [pickup[5], pickup[6]];
+      if (mo.flags & MF_COUNTKILL) kills++;
+      if (mo.flags & MF_COUNTITEM) items++;
     }
     return [kills, items];
   }
@@ -341,6 +336,7 @@ export class Mobj {
     if (p === null || !special.alive) return;
     const [kind, extra] = (special.info ?? ["deco", null]) as [string, unknown];
     let taken = true;
+    let sfx = "itemup";
     if (kind === "health") {
       if (p.health >= MAXHEALTH) taken = false;
       else {
@@ -374,9 +370,12 @@ export class Mobj {
       p.armortype = 2;
       p.setMessage("MegaSphere!");
     } else if (kind === "berserk") {
-      p.health = Math.max(p.health, 100);
-      p.mo!.health = p.health;
-      p.setMessage("Berserk!");
+      taken = Player.givePower(p, PW_STRENGTH);
+      if (taken) {
+        if (p.readyweapon !== WP_FIST) p.pendingweapon = WP_FIST;
+        p.setMessage("Berserk!");
+        sfx = "getpow";
+      }
     } else if (kind === "key") {
       p.cards[extra as number] = true;
       const names: Record<number, string> = {
@@ -418,12 +417,27 @@ export class Mobj {
       }
       p.setMessage("You picked up a backpack full of ammo!");
     } else if (kind === "item") {
-      p.setMessage(String(extra));
+      const powers: Record<string, [number, string]> = {
+        Invulnerability: [PW_INVULNERABILITY, "Invulnerability!"],
+        "Partial invisibility": [PW_INVISIBILITY, "Partial Invisibility"],
+        "Radiation shielding": [PW_IRONFEET, "Radiation Shielding Suit"],
+        "Computer area map": [PW_ALLMAP, "Computer Area Map"],
+        "Light amplification visor": [PW_INFRARED, "Light Amplification Visor"],
+      };
+      const pair = powers[String(extra)];
+      if (!pair) p.setMessage(String(extra));
+      else {
+        taken = Player.givePower(p, pair[0]);
+        if (taken) {
+          p.setMessage(pair[1]);
+          sfx = "getpow";
+        }
+      }
     } else {
       taken = false;
     }
     if (taken) {
-      if (kind !== "weapon") game.startSound("itemup");
+      if (kind !== "weapon") game.startSound(sfx);
       p.bonuscount += 6;
       if (special.flags & MF_COUNTITEM) p.itemcount++;
       special.alive = false;

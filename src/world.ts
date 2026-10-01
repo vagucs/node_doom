@@ -137,6 +137,8 @@ export class World {
   bmapwidth = 0;
   bmapheight = 0;
   blockmaplump: Buffer = Buffer.alloc(0);
+  blockmapShorts: number[] = [];
+  blocklinks: Array<Mobj | null> = [];
   validcount = 0;
   mobjs: Mobj[] = [];
   rejectmatrix: Buffer = Buffer.alloc(0);
@@ -285,11 +287,18 @@ export class World {
 
   private loadBlockmap(data: Buffer): void {
     this.blockmaplump = data;
-    if (data.length < 8) return;
+    const n = Math.floor(data.length / 2);
+    const lump: number[] = [];
+    for (let i = 0; i < n; i++) lump.push(data.readUInt16LE(i * 2));
+    this.blockmapShorts = lump;
+    if (n < 4) return;
     this.bmaporgx = i16(data, 0) * FRACUNIT;
     this.bmaporgy = i16(data, 2) * FRACUNIT;
     this.bmapwidth = i16(data, 4);
     this.bmapheight = i16(data, 6);
+    const count = this.bmapwidth * this.bmapheight;
+    this.blockmap = lump.slice(4, 4 + count);
+    this.blocklinks = new Array(count).fill(null);
   }
 
   playerStart(): MapThing | null {

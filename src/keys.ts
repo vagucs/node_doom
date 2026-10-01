@@ -16,6 +16,7 @@ export const RETURN = 13;
 export const SPACE = 32;
 export const BACKSPACE = 8;
 
+export const F1 = 0x4000003a;
 export const F2 = 0x4000003d;
 export const F3 = 0x4000003e;
 export const F11 = 0x40000044;

@@ -63,7 +63,7 @@ export class Resources {
   }
 
   colormap(level: number): Buffer {
-    level = Math.max(0, Math.min(31, level));
+    level = Math.max(0, Math.min(32, level));
     return this.colormaps.subarray(level * 256, level * 256 + 256);
   }
 

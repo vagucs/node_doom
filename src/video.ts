@@ -32,6 +32,9 @@ const SDL_TEXTUREACCESS_STREAMING = 1;
 const SDL_QUIT = 0x100;
 const SDL_KEYDOWN = 0x300;
 const SDL_KEYUP = 0x301;
+const SDL_MOUSEMOTION = 0x400;
+const SDL_MOUSEBUTTONDOWN = 0x401;
+const SDL_MOUSEBUTTONUP = 0x402;
 const AUDIO_S16LSB = 0x8010;
 
 export type GameEvent = {
@@ -41,6 +44,9 @@ export type GameEvent = {
   repeat?: boolean;
   mod?: number;
   text?: string;
+  dx?: number;
+  dy?: number;
+  button?: number;
 };
 
 type SdlApi = {
@@ -50,6 +56,7 @@ type SdlApi = {
   SDL_GetTicks: () => number;
   SDL_Delay: (ms: number) => void;
   SDL_ShowCursor: (toggle: number) => number;
+  SDL_SetRelativeMouseMode: (enabled: number) => number;
   SDL_CreateWindow: (title: string, x: number, y: number, w: number, h: number, flags: number) => unknown;
   SDL_DestroyWindow: (w: unknown) => void;
   SDL_SetWindowFullscreen: (w: unknown, flags: number) => number;
@@ -108,6 +115,7 @@ function loadSdl(): SdlApi {
     SDL_GetTicks: lib.func("uint32 SDL_GetTicks()"),
     SDL_Delay: lib.func("void SDL_Delay(uint32 ms)"),
     SDL_ShowCursor: lib.func("int SDL_ShowCursor(int toggle)"),
+    SDL_SetRelativeMouseMode: lib.func("int SDL_SetRelativeMouseMode(int enabled)"),
     SDL_CreateWindow: lib.func("SDL_Window *SDL_CreateWindow(const char *title, int x, int y, int w, int h, uint32 flags)"),
     SDL_DestroyWindow: lib.func("void SDL_DestroyWindow(SDL_Window *window)"),
     SDL_SetWindowFullscreen: lib.func("int SDL_SetWindowFullscreen(SDL_Window *window, uint32 flags)"),
@@ -157,6 +165,7 @@ export class Video {
   private fpsFrames = 0;
   private fpsStamp = 0;
   private mix: number[] = [];
+  private mouseGrab = false;
 
   init(fullscreen = false, title = "DOOM"): void {
     this.fb.fill(0);
@@ -177,6 +186,13 @@ export class Video {
 
   delay(ms: number): void {
     this.sdl?.SDL_Delay(ms);
+  }
+
+  setRelativeMouse(on: boolean): void {
+    if (!this.sdl || on === this.mouseGrab) return;
+    this.mouseGrab = on;
+    this.sdl.SDL_SetRelativeMouseMode(on ? 1 : 0);
+    this.sdl.SDL_ShowCursor(on ? 0 : 1);
   }
 
   toggleFullscreen(): void {
@@ -258,6 +274,21 @@ export class Video {
       const type = this.eventBuf.readUInt32LE(0);
       if (type === SDL_QUIT) {
         out.push({ type: "quit" });
+        continue;
+      }
+      if (type === SDL_MOUSEMOTION) {
+        out.push({
+          type: "mousemotion",
+          dx: this.eventBuf.readInt32LE(28),
+          dy: this.eventBuf.readInt32LE(32),
+        });
+        continue;
+      }
+      if (type === SDL_MOUSEBUTTONDOWN || type === SDL_MOUSEBUTTONUP) {
+        out.push({
+          type: type === SDL_MOUSEBUTTONDOWN ? "mousedown" : "mouseup",
+          button: this.eventBuf[16],
+        });
         continue;
       }
       if (type !== SDL_KEYDOWN && type !== SDL_KEYUP) continue;

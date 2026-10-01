@@ -14,7 +14,9 @@ Por **Wagner Nunes da Silva**
 - [www.vagucs.com.br](https://www.vagucs.com.br)
 - [LinkedIn](https://www.linkedin.com/in/wagner-nunes-da-silva-b0a15360)
 
-Esta árvore é um port de **[harbour_doom](https://github.com/vagucs/harbour_doom)** (`doom_hb`): o mesmo motor Chocolate Doom / doomgeneric que primeiro foi de C para Harbour, depois para Python (`doom_python`) e PHP (`php_doom`), agora de Harbour para Node.js / TypeScript.
+O mesmo motor em outras linguagens: [harbour_doom](https://github.com/vagucs/harbour_doom) · [python_doom](https://github.com/vagucs/python_doom) · [php_doom](https://github.com/vagucs/php_doom) · [node_doom](https://github.com/vagucs/node_doom) · [java_doom](https://github.com/vagucs/java_doom)
+
+Esta árvore é um port de **[harbour_doom](https://github.com/vagucs/harbour_doom)** (`doom_hb`): o mesmo motor Chocolate Doom / doomgeneric que primeiro foi de C para Harbour, depois para [Python](https://github.com/vagucs/python_doom) e [PHP](https://github.com/vagucs/php_doom), agora de Harbour para Node.js / TypeScript.
 
 Cada fonte leva o mesmo cabeçalho de autor dos `.prg` Harbour.
 
@@ -41,7 +43,6 @@ O que não entra nesta árvore (o mesmo corte do `boot.prg` Harbour):
 
 - Rede, música de CD, joystick
 - Quantização de paleta `-colors` (experimento só no Harbour)
-- Playback de demo, tabelas `info` vanilla completas
 
 ---
 
@@ -53,7 +54,7 @@ O port Harbour ensinou a ler C com os olhos de outra linguagem. O Python tirou o
 
 O que o port pretende ensinar:
 
-- **Cinco linguagens, um motor.** C (`base_c/` no harbour_doom) → Harbour (`.prg`) → Python (`doom_python`) → PHP (`php_doom/src`) → TypeScript (`node_doom/src`). Os mesmos nomes (`P_Thrust`, `R_DrawColumn`, `A_Look`) para abrir as versões lado a lado.
+- **Seis linguagens, um motor.** C (`base_c/` no harbour_doom) → Harbour ([harbour_doom](https://github.com/vagucs/harbour_doom)) → Python ([python_doom](https://github.com/vagucs/python_doom)) → PHP ([php_doom](https://github.com/vagucs/php_doom)) → TypeScript ([node_doom](https://github.com/vagucs/node_doom)) → Java ([java_doom](https://github.com/vagucs/java_doom)). Os mesmos nomes (`P_Thrust`, `R_DrawColumn`, `A_Look`) para abrir as versões lado a lado.
 - **O que os ponteiros faziam.** TypeScript usa objetos e typed arrays; wrap-around, ângulos BAM e overflow 16.16 ficam explícitos (`asU32`, `shar`, `fixedMul`) porque números JS não estouram em 32 bits.
 - **Onde um interpretador basta.** O jogo inteiro roda em Node. SDL2 só abre janela, lê teclado e enfileira PCM. koffi é a fronteira nativa, como o Allegro foi no Harbour e o FFI no PHP.
 - **CLI, não HTTP.** Não há canvas no navegador nem servidor web.
@@ -71,24 +72,26 @@ Sugestão de roteiro:
 
 ## De C / Harbour / Python / PHP para Node
 
-Arrays em TypeScript são 0-based, como o C, o Python e o PHP. Arrays Harbour eram 1-based; esse deslocamento some aqui.
+Arrays em TypeScript são 0-based, como o C, o Python, o PHP e o Java. Arrays Harbour eram 1-based; esse deslocamento some aqui.
 
-| DOOM em C | Harbour | Python | PHP | Node (esta árvore) |
-|---|---|---|---|---|
-| `struct` / `typedef struct` | `CLASS ... DATA` | `@dataclass` | `class` + propriedades tipadas | `class` + campos tipados |
-| `thing->x` | `thing:x` | `thing.x` | `$thing->x` | `thing.x` |
-| `NULL` | `NIL` | `None` | `null` | `null` |
-| `array[0]` | `array[1]` | `array[0]` | `$array[0]` | `array[0]` |
-| `&`, `\|`, `^` | `hb_qbitAnd/Or/Xor` | `&`, `\|`, `^` | `&`, `\|`, `^` | `&`, `\|`, `^` |
-| `x >> n` sem sinal | `UShr(x, n)` | `ushr(x, n)` | `Compat::ushr($x, $n)` | `ushr(x, n)` |
-| `x >> n` com sinal | `Shar(x, n)` | `shar(x, n)` | `Compat::shar($x, $n)` | `shar(x, n)` |
-| estouro de 32 bits | `AsU32` / `AsInt32` | `as_u32` / `as_i32` | `Compat::asU32` / `asI32` | `asU32` / `asI32` |
-| `fixed_t` 16.16 | `FixedMul` / `FixedDiv` | `fixed_mul` / `fixed_div` | `Compat::fixedMul` / `fixedDiv` | `fixedMul` / `fixedDiv` (BigInt) |
-| framebuffer `byte *` | string Harbour | `bytearray` + LUT numpy | `array<int>` + SDL ARGB8888 | `Uint8Array` + SDL ARGB8888 |
-| Allegro 4.2.2 | GTALLEG / llibg | pygame | SDL2 via FFI | SDL2 via koffi |
-| `Z_Malloc` | GC | GC | GC | GC |
-| globais `PUBLIC` | `PUBLIC` / `MEMVAR` | campos em `Game` | campos públicos em `Game` | campos públicos em `Game` |
-| 100+ arquivos `.prg` | 1:1 com o C | `doom/*.py` condensado | `src/*.php` condensado | `src/*.ts` condensado |
+A tabela abaixo é a mesma comparação em seis linguagens usada em todos os README `*_doom`:
+
+| DOOM em C | [Harbour](https://github.com/vagucs/harbour_doom) | [Python](https://github.com/vagucs/python_doom) | [PHP](https://github.com/vagucs/php_doom) | [Node](https://github.com/vagucs/node_doom) | [Java](https://github.com/vagucs/java_doom) |
+|---|---|---|---|---|---|
+| `struct` / `typedef struct` | `CLASS ... DATA` | `@dataclass` | `class` + propriedades tipadas | `class` + campos tipados | `class` + campos |
+| `thing->x` | `thing:x` | `thing.x` | `$thing->x` | `thing.x` | `thing.x` |
+| `NULL` | `NIL` | `None` | `null` | `null` | `null` |
+| `array[0]` | `array[1]` | `array[0]` | `$array[0]` | `array[0]` | `array[0]` |
+| `&`, `\|`, `^` | `hb_qbitAnd/Or/Xor` | `&`, `\|`, `^` | `&`, `\|`, `^` | `&`, `\|`, `^` | `&`, `\|`, `^` |
+| `x >> n` sem sinal | `UShr(x, n)` | `ushr(x, n)` | `Compat::ushr($x, $n)` | `ushr(x, n)` | `Compat.ushr` / `>>>` |
+| `x >> n` com sinal | `Shar(x, n)` | `shar(x, n)` | `Compat::shar($x, $n)` | `shar(x, n)` | `Compat.shar` / `>>` |
+| estouro de 32 bits | `AsU32` / `AsInt32` | `as_u32` / `as_i32` | `Compat::asU32` / `asI32` | `asU32` / `asI32` | `int` já faz wrap |
+| `fixed_t` 16.16 | `FixedMul` / `FixedDiv` | `fixed_mul` / `fixed_div` | `Compat::fixedMul` / `fixedDiv` | `fixedMul` / `fixedDiv` (BigInt) | `fixedMul` / `fixedDiv` (`long`) |
+| framebuffer `byte *` | string Harbour | `bytearray` + LUT numpy | `array<int>` + SDL ARGB8888 | `Uint8Array` + SDL ARGB8888 | `int[]` + SDL ARGB8888 |
+| Allegro 4.2.2 | GTALLEG / llibg | pygame | SDL2 via FFI | SDL2 via koffi | SDL2 via JNA |
+| `Z_Malloc` | GC | GC | GC | GC | GC |
+| globais `PUBLIC` | `PUBLIC` / `MEMVAR` | campos em `Game` | campos públicos em `Game` | campos públicos em `Game` | campos públicos em `Game` |
+| 100+ arquivos `.prg` | 1:1 com o C | `doom/*.py` condensado | `src/*.php` condensado | `src/*.ts` condensado | `src/doom/*.java` condensado |
 
 ### Lado a lado: `P_Thrust`
 
@@ -187,7 +190,7 @@ Taxa típica de desenho no mesmo PC (320×200, janela, IWAD shareware). O jogo c
 | Port | FPS típico |
 |---|---|
 | Harbour (`doom_hb`) | ~12 |
-| Python (`doom_python`) | ~8 |
+| Python (`python_doom`) | ~8 |
 | PHP (`php_doom`) | ~20 |
 | Node (`node_doom`) | ~100 |
 | Java (`java_doom`) | ~180 (travado no vsync) |
@@ -276,7 +279,7 @@ As opções **Screen Size** e **Graphic Detail** (HIGH/LOW) mudam a vista 3D (`R
 
 ### Cheats (só nostalgia)
 
-Digite no teclado durante o jogo; não precisa de Enter:
+Digite no teclado durante o jogo; não precisa de Enter. No skill Nightmare só **IDCLEV** e **IDDT** funcionam (vanilla).
 
 | Código | Efeito |
 |---|---|
@@ -285,6 +288,11 @@ Digite no teclado durante o jogo; não precisa de Enter:
 | **IDFA** | Armas, munição e armadura (sem chaves) |
 | **IDCLIP** / **IDSPISPOPD** | Sem colisão |
 | **IDDT** | Cheat do automap (digite com o mapa aberto): todas as paredes, depois os things |
+| **IDBEHOLD** | Lista os power-ups; em seguida **V** invulnerabilidade, **S** berserk, **I** invisibilidade, **R** traje anti-radiação, **A** mapa do computador, **L** visor de luz |
+| **IDCHOPPERS** | Motosserra |
+| **IDMYPOS** | Mostra ângulo e coordenadas |
+| **IDCLEV** + 2 dígitos | Warp (`11` = E1M1 ou MAP11) |
+| **IDMUS** + 2 dígitos | Troca a música (`11` = faixa de E1M1 / MAP11) |
 
 ---
 
@@ -312,8 +320,18 @@ Digite no teclado durante o jogo; não precisa de Enter:
 | `-warp e m` | Pula o título e começa no episódio `e` mapa `m` |
 | `-skill n` | 0 baby … 4 nightmare (padrão 2, Hurt Me Plenty) |
 | `-nomonsters` | Não spawna inimigos |
+| `-fast` | Monstros mais rápidos (vanilla `-fast`) |
+| `-respawn` | Respawn estilo nightmare |
+| `-file wad [wad…]` | PWADs extras depois do IWAD |
+| `-record nome` | Grava demo em `nome.lmp` |
+| `-playdemo nome` | Toca lump ou `.lmp` e sai |
+| `-timedemo nome` | Playback o mais rápido possível e imprime FPS |
+| `-nosound` | Desliga SFX e música |
+| `-nomusic` | Desliga só a música |
 
-Flags só do Harbour **não** implementadas aqui: `-videoc`, `-scaling`, `-gfxmode`, `-colors`, `-nosound` / `-nosfx` / `-nomusic`, `-config`, rede/CD/joystick.
+`default.cfg` no diretório de trabalho guarda `mouse_sensitivity`, `sfx_volume`, `music_volume`, `show_messages`, `use_mouse`, `screenblocks`. Mouse virar/andar usa movimento relativo do SDL2 quando `use_mouse` está ligado. Saves continuam JSON (save binário vanilla não é usado).
+
+Flags só do Harbour **não** implementadas aqui: `-videoc`, `-scaling`, `-gfxmode`, `-colors`, rede/CD/joystick.
 
 ---
 
@@ -354,9 +372,10 @@ docs/                QR codes de doação
 | `src/mus2mid.ts` | `mus2mid.c` |
 | `src/menu.ts` | `m_menu` |
 | `src/saveg.ts` | `p_saveg` (nome de 24 bytes + JSON) |
+| `src/config.ts` | `m_misc` default.cfg |
 | `src/wistuff.ts` | `wi_stuff` |
 | `src/wipe.ts` | `f_wipe` melt |
-| `src/finale.ts` | `f_finale` (texto + bunny scroll) |
+| `src/finale.ts` | `f_finale` (texto + bunny scroll + cast MAP30) |
 | `src/game.ts` | `d_main` `g_game` `d_loop` `boot` |
 
 ---
@@ -366,9 +385,10 @@ docs/                QR codes de doação
 1. **id Software DOOM** (1993) — motor original
 2. **Chocolate Doom / doomgeneric** — C portátil
 3. **[harbour_doom](https://github.com/vagucs/harbour_doom)** — Harbour + Allegro 4.2.2 (`Doom_hb.exe`)
-4. **doom_python** — Python + pygame, a partir desse port Harbour
-5. **php_doom** — PHP 8 CLI + SDL2 FFI, a partir do mesmo Harbour
-6. **Esta árvore** — Node.js CLI + TypeScript + SDL2 (koffi), a partir do mesmo Harbour (intenção de gameplay 100% dos `.prg`; quantidade de arquivos condensada)
+4. **[python_doom](https://github.com/vagucs/python_doom)** — Python + pygame
+5. **[php_doom](https://github.com/vagucs/php_doom)** — PHP 8 CLI + SDL2 FFI
+6. **[node_doom](https://github.com/vagucs/node_doom)** — Node.js CLI + TypeScript + SDL2 (koffi) (esta árvore)
+7. **[java_doom](https://github.com/vagucs/java_doom)** — Java 17 CLI + SDL2 (JNA)
 
 ---
 

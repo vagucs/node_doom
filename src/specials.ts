@@ -11,12 +11,21 @@
  */
 
 import { Collision } from "./collision.ts";
+import { Enemy } from "./enemy.ts";
 import { intdiv } from "./compat.ts";
 import {
   BUTTONTIME,
+  CEIL_CRUSHANDRAISE,
+  CEIL_FASTCRUSH,
+  CEIL_LOWERANDCRUSH,
+  CEIL_LOWERTOFLOOR,
+  CEIL_RAISETOHIGHEST,
+  CEIL_SILENTCRUSH,
   CEILSPEED,
+  FASTDARK,
   FLOORSPEED,
   FRACUNIT,
+  GLOWSPEED,
   IT_BLUECARD,
   IT_BLUESKULL,
   IT_REDCARD,
@@ -28,6 +37,7 @@ import {
   PLAT_BLAZEDWUS,
   PLAT_DOWN,
   PLAT_DWUS,
+  PLAT_PERPETUAL,
   PLAT_UP,
   PLAT_WAITING,
   PLATSPEED,
@@ -45,11 +55,15 @@ import {
   VLD_CLOSE30,
   VLD_NORMAL,
   VLD_OPEN,
+  VLD_RAISEIN5,
+  SLOWDARK,
+  STROBEBRIGHT,
 } from "./defs.ts";
+import { MT_TELEPORTMAN } from "./info.ts";
 import type { Mobj } from "./mobj.ts";
 import type { Resources } from "./rdata.ts";
 import type { Sound } from "./sound.ts";
-import type { Line, Sector, World } from "./world.ts";
+import { Line, type Sector, type World } from "./world.ts";
 
 export class VerticalDoor {
   dead = false;
@@ -80,6 +94,8 @@ export class Plat {
 
 export class FloorMove {
   dead = false;
+  crush = false;
+  floorpic: number | null = null;
   constructor(
     public sector: Sector,
     public direction: number,
@@ -90,11 +106,31 @@ export class FloorMove {
 
 export class CeilingMove {
   dead = false;
+  crush = false;
+  ctype = 0;
+  topheight = 0;
+  bottomheight = 0;
   constructor(
     public sector: Sector,
     public direction: number,
     public dest: number,
     public speed: number,
+  ) {}
+}
+
+export class LightThinker {
+  dead = false;
+  count = 0;
+  minlight = 0;
+  maxlight = 0;
+  darktime = 0;
+  brighttime = 0;
+  maxtime = 64;
+  mintime = 7;
+  direction = -1;
+  constructor(
+    public sector: Sector,
+    public kind: string,
   ) {}
 }
 
@@ -111,6 +147,8 @@ type Thinker = VerticalDoor | Plat | FloorMove | CeilingMove;
 
 export class Specials {
   thinkers: Thinker[] = [];
+  lights: LightThinker[] = [];
+  scrollLines: Line[] = [];
   buttons: Button[] = [];
   exitRequested = false;
   secretExit = false;
@@ -140,6 +178,7 @@ export class Specials {
         this.switchMap[ib] = ia;
       }
     }
+    this.spawnSpecials();
   }
 
   private movePlane(s: Sector, speed: number, dest: number, plane: number, dir: number, crush = false): number {
@@ -203,11 +242,42 @@ export class Specials {
     return h === 0x7fffffff ? cur : h;
   }
 
+  static highestCeiling(s: Sector): number {
+    let h = s.ceilingheight;
+    for (const o of Specials.surroundingSectors(s)) h = Math.max(h, o.ceilingheight);
+    return h;
+  }
+
+  static raiseFloorDest(s: Sector): number {
+    const dest = Specials.lowestCeiling(s);
+    return dest <= s.ceilingheight ? dest : s.ceilingheight;
+  }
+
+  static raiseFloorCrushDest(s: Sector): number {
+    return Specials.raiseFloorDest(s) - 8 * FRACUNIT;
+  }
+
+  static minSurroundingLight(s: Sector, max: number): number {
+    for (const o of Specials.surroundingSectors(s)) max = Math.min(max, o.lightlevel);
+    return max;
+  }
+
+  static maxSurroundingLight(s: Sector): number {
+    let h = s.lightlevel;
+    for (const o of Specials.surroundingSectors(s)) h = Math.max(h, o.lightlevel);
+    return h;
+  }
+
   sectorsFromTag(tag: number): Sector[] {
     return tag ? this.world.sectors.filter((s) => s.tag === tag) : [];
   }
 
   tick(): void {
+    this.tickLights();
+    for (const ln of this.scrollLines) {
+      const side = ln.sides[0];
+      if (side) side.textureoffset += FRACUNIT;
+    }
     const alive: Thinker[] = [];
     for (const t of this.thinkers) {
       if (t.dead) continue;
@@ -234,10 +304,10 @@ export class Specials {
   private tickDoor(d: VerticalDoor): void {
     if (d.direction === 0) {
       if (--d.topcountdown <= 0) {
-        if ([VLD_NORMAL, VLD_BLAZERAISE].includes(d.type)) {
+        if ([VLD_NORMAL, VLD_BLAZERAISE, VLD_CLOSE].includes(d.type)) {
           d.direction = -1;
-          this.sound.play(d.type === VLD_NORMAL ? "dorcls" : "bdcls");
-        } else if (d.type === VLD_CLOSE30) {
+          this.sound.play(d.type === VLD_BLAZERAISE ? "bdcls" : "dorcls");
+        } else if ([VLD_CLOSE30, VLD_RAISEIN5].includes(d.type)) {
           d.direction = 1;
           this.sound.play("doropn");
         }
@@ -273,7 +343,7 @@ export class Specials {
     }
     const up = p.status === PLAT_UP;
     if (this.movePlane(p.sector, p.speed, up ? p.high : p.low, 0, up ? 1 : -1) !== RESULT_PASTDEST) return;
-    if (!up) {
+    if (!up || p.type === PLAT_PERPETUAL) {
       p.status = PLAT_WAITING;
       p.count = p.wait;
       this.sound.play("pstop");
@@ -285,16 +355,30 @@ export class Specials {
   }
 
   private tickFloor(f: FloorMove): void {
-    if (this.movePlane(f.sector, f.speed, f.dest, 0, f.direction) === RESULT_PASTDEST) {
+    if (this.movePlane(f.sector, f.speed, f.dest, 0, f.direction, f.crush) === RESULT_PASTDEST) {
+      if (f.floorpic !== null) f.sector.floorpic = f.floorpic;
       f.sector.specialdata = null;
       f.dead = true;
     }
   }
 
   private tickCeiling(c: CeilingMove): void {
-    if (this.movePlane(c.sector, c.speed, c.dest, 1, c.direction) === RESULT_PASTDEST) {
-      c.sector.specialdata = null;
-      c.dead = true;
+    const dest = c.ctype ? (c.direction === 1 ? c.topheight : c.bottomheight) : c.dest;
+    const res = this.movePlane(c.sector, c.speed, dest, 1, c.direction, c.crush);
+    const bounce = [CEIL_CRUSHANDRAISE, CEIL_FASTCRUSH, CEIL_SILENTCRUSH].includes(c.ctype);
+    if (res === RESULT_PASTDEST) {
+      if (bounce) {
+        if (c.direction === -1) {
+          c.direction = 1;
+          c.speed = CEILSPEED * (c.ctype === CEIL_FASTCRUSH ? 2 : 1);
+        } else c.direction = -1;
+        if (c.ctype === CEIL_SILENTCRUSH) this.sound.play("pstop");
+      } else {
+        c.sector.specialdata = null;
+        c.dead = true;
+      }
+    } else if (res === RESULT_CRUSHED && bounce) {
+      c.speed = Math.max(1, intdiv(CEILSPEED, 8));
     }
   }
 
@@ -336,20 +420,58 @@ export class Specials {
     return ok;
   }
 
+  private tagLine(tag: number): Line {
+    const ln = new Line();
+    ln.tag = tag;
+    return ln;
+  }
+
+  doFloorTag(tag: number, dest: (s: Sector) => number, dir: number, speed = FLOORSPEED, crush = false): boolean {
+    return this.doFloor(this.tagLine(tag), dest, dir, speed, crush);
+  }
+
+  doDoorTag(tag: number, type: number): boolean {
+    return this.doDoor(this.tagLine(tag), type);
+  }
+
+  raiseToTextureTag(tag: number): boolean {
+    return this.raiseToTexture(this.tagLine(tag));
+  }
+
+  raiseToTexture(line: Line): boolean {
+    let ok = false;
+    for (const s of this.sectorsFromTag(line.tag)) {
+      if (s.specialdata) continue;
+      let minsize = 0x7fffffff;
+      for (const ln of s.lines) {
+        if (!(ln.flags & ML_TWOSIDED)) continue;
+        for (const side of ln.sides) {
+          if (!side || side.bottomtexture <= 0) continue;
+          const h = this.res.textureHeight(side.bottomtexture);
+          if (h > 0 && h < minsize) minsize = h;
+        }
+      }
+      if (minsize === 0x7fffffff) minsize = 64 * FRACUNIT;
+      if (this.startFloor(s, s.floorheight + minsize, 1, FLOORSPEED)) ok = true;
+    }
+    return ok;
+  }
+
   verticalDoor(line: Line, thing: Mobj): void {
     const p = thing.player;
     const sp = line.special;
-    const locks: Array<[number, number, number, number, string]> = [
-      [26, 32, IT_BLUECARD, IT_BLUESKULL, "blue"],
-      [27, 34, IT_YELLOWCARD, IT_YELLOWSKULL, "yellow"],
-      [28, 33, IT_REDCARD, IT_REDSKULL, "red"],
+    const locks: Array<[number[], number, number, string]> = [
+      [[26, 32, 99, 133], IT_BLUECARD, IT_BLUESKULL, "blue"],
+      [[27, 34, 136, 137], IT_YELLOWCARD, IT_YELLOWSKULL, "yellow"],
+      [[28, 33, 134, 135], IT_REDCARD, IT_REDSKULL, "red"],
     ];
-    for (const [a, b, card, skull, name] of locks)
-      if ([a, b].includes(sp) && p && !(p.cards[card] || p.cards[skull])) {
+    for (const [nums, card, skull, name] of locks) {
+      if (nums.includes(sp) && p && !(p.cards[card] || p.cards[skull])) {
         p.message = `You need a ${name} key to open this door`;
         this.sound.play("oof");
         return;
       }
+    }
     const s = line.sides[1]?.sector;
     if (!s) return;
     let type: number;
@@ -358,8 +480,8 @@ export class Specials {
       type = VLD_OPEN;
       line.special = 0;
     } else if (sp === 117) type = VLD_BLAZERAISE;
-    else if (sp === 118) {
-      type = VLD_OPEN;
+    else if ([118, 99, 133, 134, 135, 136, 137].includes(sp)) {
+      type = VLD_BLAZEOPEN;
       line.special = 0;
     } else type = VLD_NORMAL;
     this.spawnDoor(s, type);
@@ -387,11 +509,12 @@ export class Specials {
     return ok;
   }
 
-  doFloor(line: Line, dest: (s: Sector) => number, dir: number): boolean {
+  doFloor(line: Line, dest: (s: Sector) => number, dir: number, speed = FLOORSPEED, crush = false): boolean {
     let ok = false;
     for (const s of this.sectorsFromTag(line.tag)) {
       if (s.specialdata) continue;
-      const f = new FloorMove(s, dir, dest(s), FLOORSPEED);
+      const f = new FloorMove(s, dir, dest(s), speed);
+      f.crush = crush;
       s.specialdata = f;
       this.thinkers.push(f);
       ok = true;
@@ -399,11 +522,12 @@ export class Specials {
     return ok;
   }
 
-  doCeiling(line: Line, dest: (s: Sector) => number, dir = -1, speed: number | null = null): boolean {
+  doCeiling(line: Line, dest: (s: Sector) => number, dir = -1, speed: number | null = null, crush = false): boolean {
     let ok = false;
     for (const s of this.sectorsFromTag(line.tag)) {
       if (s.specialdata) continue;
       const c = new CeilingMove(s, dir, dest(s), speed ?? CEILSPEED);
+      c.crush = crush;
       s.specialdata = c;
       this.thinkers.push(c);
       ok = true;
@@ -443,6 +567,260 @@ export class Specials {
     return ok;
   }
 
+  spawnSpecials(): void {
+    for (const s of this.world.sectors) {
+      const sp = s.special;
+      if (sp === 1) this.spawnLightFlash(s);
+      else if (sp === 2) this.spawnStrobe(s, FASTDARK, false);
+      else if (sp === 3) this.spawnStrobe(s, SLOWDARK, false);
+      else if (sp === 4) {
+        this.spawnStrobe(s, FASTDARK, false);
+        s.special = 4;
+      } else if (sp === 8) this.spawnGlow(s);
+      else if (sp === 10) this.spawnDoorCloseIn30(s);
+      else if (sp === 12) this.spawnStrobe(s, SLOWDARK, true);
+      else if (sp === 13) this.spawnStrobe(s, FASTDARK, true);
+      else if (sp === 14) this.spawnDoorRaiseIn5(s);
+      else if (sp === 17) this.spawnFireFlicker(s);
+    }
+    for (const ln of this.world.lines) if (ln.special === 48) this.scrollLines.push(ln);
+  }
+
+  private pRandom(): number {
+    return Enemy.random();
+  }
+
+  doCrusher(line: Line, ctype: number): boolean {
+    let ok = false;
+    for (const s of this.sectorsFromTag(line.tag)) {
+      if (s.specialdata) continue;
+      let top = s.ceilingheight;
+      let bottom = s.floorheight;
+      let crush = ctype !== CEIL_RAISETOHIGHEST;
+      let speed = CEILSPEED * (ctype === CEIL_FASTCRUSH ? 2 : 1);
+      let dir = -1;
+      let dest = bottom;
+      if (ctype === CEIL_RAISETOHIGHEST) {
+        dest = Specials.highestCeiling(s);
+        dir = 1;
+        crush = false;
+      } else if (ctype !== CEIL_LOWERTOFLOOR) {
+        bottom += 8 * FRACUNIT;
+        dest = bottom;
+      }
+      const c = new CeilingMove(s, dir, dest, speed);
+      c.crush = crush;
+      c.ctype = ctype;
+      c.topheight = top;
+      c.bottomheight = bottom;
+      s.specialdata = c;
+      this.thinkers.push(c);
+      ok = true;
+    }
+    return ok;
+  }
+
+  doDonut(line: Line): boolean {
+    let ok = false;
+    for (const s1 of this.sectorsFromTag(line.tag)) {
+      if (s1.specialdata || !s1.lines.length) continue;
+      const edge = s1.lines[0]!;
+      const s2 = edge.frontsector === s1 ? edge.backsector : edge.frontsector;
+      if (!s2) continue;
+      let s3: Sector | null = null;
+      for (const ln of s2.lines) {
+        if (ln.backsector && ln.backsector !== s1) {
+          s3 = ln.backsector;
+          break;
+        }
+      }
+      if (!s3) continue;
+      if (this.startFloor(s2, s3.floorheight, 1, intdiv(FLOORSPEED, 2), false, s3.floorpic)) ok = true;
+      if (this.startFloor(s1, s3.floorheight, -1, intdiv(FLOORSPEED, 2))) ok = true;
+    }
+    return ok;
+  }
+
+  private startFloor(s: Sector, dest: number, dir: number, speed: number, crush = false, pic: number | null = null): boolean {
+    if (s.specialdata) return false;
+    const f = new FloorMove(s, dir, dest, speed);
+    f.crush = crush;
+    f.floorpic = pic;
+    s.specialdata = f;
+    this.thinkers.push(f);
+    return true;
+  }
+
+  doPlatPerpetual(line: Line): boolean {
+    let ok = false;
+    for (const s of this.sectorsFromTag(line.tag)) {
+      if (s.specialdata) continue;
+      const p = new Plat(
+        s, PLAT_PERPETUAL, this.pRandom() & 1, PLATSPEED,
+        Math.min(Specials.lowestFloor(s), s.floorheight),
+        Math.max(Specials.highestFloor(s), s.floorheight),
+        PLATWAIT * TICRATE,
+      );
+      s.specialdata = p;
+      this.thinkers.push(p);
+      this.sound.play("pstart");
+      ok = true;
+    }
+    return ok;
+  }
+
+  doPlatRaise(line: Line, amount = 0): boolean {
+    let ok = false;
+    const pic = line.sides[0]?.sector?.floorpic ?? null;
+    for (const s of this.sectorsFromTag(line.tag)) {
+      if (s.specialdata) continue;
+      const high = amount ? s.floorheight + amount : Specials.nextHighestFloor(s, s.floorheight);
+      if (pic !== null) s.floorpic = pic;
+      const p = new Plat(s, PLAT_DWUS, PLAT_UP, intdiv(PLATSPEED, 2), s.floorheight, high, 0);
+      s.specialdata = p;
+      this.thinkers.push(p);
+      this.sound.play("pstart");
+      ok = true;
+    }
+    return ok;
+  }
+
+  lightTurnOn(line: Line, bright: number): boolean {
+    let ok = false;
+    for (const s of this.sectorsFromTag(line.tag)) {
+      s.lightlevel = bright || Specials.maxSurroundingLight(s);
+      ok = true;
+    }
+    return ok;
+  }
+
+  turnTagLightsOff(line: Line): boolean {
+    let ok = false;
+    for (const s of this.sectorsFromTag(line.tag)) {
+      s.lightlevel = Specials.minSurroundingLight(s, s.lightlevel);
+      ok = true;
+    }
+    return ok;
+  }
+
+  startLightStrobing(line: Line): boolean {
+    let ok = false;
+    for (const s of this.sectorsFromTag(line.tag)) {
+      if (s.specialdata) continue;
+      this.spawnStrobe(s, SLOWDARK, false);
+      ok = true;
+    }
+    return ok;
+  }
+
+  private spawnLightFlash(s: Sector): void {
+    s.special = 0;
+    const l = new LightThinker(s, "flash");
+    l.maxlight = s.lightlevel;
+    l.minlight = Specials.minSurroundingLight(s, s.lightlevel);
+    l.count = (this.pRandom() & l.maxtime) + 1;
+    this.lights.push(l);
+  }
+
+  private spawnStrobe(s: Sector, dark: number, sync: boolean): void {
+    s.special = 0;
+    const min = Specials.minSurroundingLight(s, s.lightlevel);
+    const l = new LightThinker(s, "strobe");
+    l.maxlight = s.lightlevel;
+    l.minlight = min === s.lightlevel ? 0 : min;
+    l.darktime = dark;
+    l.brighttime = STROBEBRIGHT;
+    l.count = sync ? 1 : (this.pRandom() & 7) + 1;
+    this.lights.push(l);
+  }
+
+  private spawnGlow(s: Sector): void {
+    s.special = 0;
+    const l = new LightThinker(s, "glow");
+    l.maxlight = s.lightlevel;
+    l.minlight = Specials.minSurroundingLight(s, s.lightlevel);
+    this.lights.push(l);
+  }
+
+  private spawnFireFlicker(s: Sector): void {
+    s.special = 0;
+    const l = new LightThinker(s, "fire");
+    l.maxlight = s.lightlevel;
+    l.minlight = Specials.minSurroundingLight(s, s.lightlevel) + 16;
+    l.count = 4;
+    this.lights.push(l);
+  }
+
+  private spawnDoorCloseIn30(s: Sector): void {
+    if (s.specialdata) return;
+    s.special = 0;
+    const d = new VerticalDoor(s, VLD_CLOSE, 0, s.ceilingheight, VDOORSPEED, VDOORWAIT);
+    d.topcountdown = 30 * TICRATE;
+    s.specialdata = d;
+    this.thinkers.push(d);
+  }
+
+  private spawnDoorRaiseIn5(s: Sector): void {
+    if (s.specialdata) return;
+    s.special = 0;
+    const d = new VerticalDoor(s, VLD_RAISEIN5, 0, Specials.lowestCeiling(s) - 4 * FRACUNIT, VDOORSPEED, VDOORWAIT);
+    d.topcountdown = 5 * 60 * TICRATE;
+    s.specialdata = d;
+    this.thinkers.push(d);
+  }
+
+  private tickLights(): void {
+    for (const l of this.lights) {
+      if (l.kind === "glow") {
+        if (l.direction === -1) {
+          l.sector.lightlevel -= GLOWSPEED;
+          if (l.sector.lightlevel <= l.minlight) {
+            l.sector.lightlevel += GLOWSPEED;
+            l.direction = 1;
+          }
+        } else {
+          l.sector.lightlevel += GLOWSPEED;
+          if (l.sector.lightlevel >= l.maxlight) {
+            l.sector.lightlevel -= GLOWSPEED;
+            l.direction = -1;
+          }
+        }
+        continue;
+      }
+      if (--l.count !== 0) continue;
+      if (l.kind === "flash") {
+        if (l.sector.lightlevel === l.maxlight) {
+          l.sector.lightlevel = l.minlight;
+          l.count = (this.pRandom() & l.mintime) + 1;
+        } else {
+          l.sector.lightlevel = l.maxlight;
+          l.count = (this.pRandom() & l.maxtime) + 1;
+        }
+      } else if (l.kind === "strobe") {
+        if (l.sector.lightlevel === l.minlight) {
+          l.sector.lightlevel = l.maxlight;
+          l.count = l.brighttime;
+        } else {
+          l.sector.lightlevel = l.minlight;
+          l.count = l.darktime;
+        }
+      } else if (l.kind === "fire") {
+        const amount = (this.pRandom() & 3) * 16;
+        l.sector.lightlevel = l.sector.lightlevel - amount < l.minlight ? l.minlight : l.maxlight - amount;
+        l.count = 4;
+      }
+    }
+  }
+
+  shootSpecial(line: Line, _thing: Mobj): void {
+    const sp = line.special;
+    if (sp === 24 && this.doFloor(line, Specials.raiseFloorDest, 1)) this.changeSwitch(line, 0);
+    else if (sp === 46) {
+      this.doDoor(line, VLD_OPEN);
+      this.changeSwitch(line, 1);
+    } else if (sp === 47 && this.doPlatRaise(line, 0)) this.changeSwitch(line, 0);
+  }
+
   changeSwitch(line: Line, again: number): void {
     const side = line.sides[0];
     if (!side) return;
@@ -464,7 +842,7 @@ export class Specials {
   useSpecial(line: Line, thing: Mobj, side: number): void {
     if (side !== 0) return;
     const sp = line.special;
-    if ([1, 26, 27, 28, 31, 32, 33, 34, 117, 118].includes(sp)) {
+    if ([1, 26, 27, 28, 31, 32, 33, 34, 99, 117, 118, 133, 134, 135, 136, 137].includes(sp)) {
       this.verticalDoor(line, thing);
       return;
     }
@@ -490,11 +868,14 @@ export class Specials {
       102: () => this.doFloor(line, (s) => s.floorheight - 8 * FRACUNIT, -1),
       7: () => this.doStairs(line, 8 * FRACUNIT, intdiv(FLOORSPEED, 4)),
       127: () => this.doStairs(line, 16 * FRACUNIT, FLOORSPEED * 4),
-      41: () => this.doCeiling(line, (s) => s.floorheight),
-      49: () => this.doCeiling(line, (s) => s.floorheight + 8 * FRACUNIT),
-      14: () => this.doPlatDwus(line),
-      15: () => this.doPlatDwus(line),
-      20: () => this.doPlatDwus(line),
+      41: () => this.doCrusher(line, CEIL_LOWERTOFLOOR),
+      49: () => this.doCrusher(line, CEIL_CRUSHANDRAISE),
+      9: () => this.doDonut(line),
+      14: () => this.doPlatRaise(line, 32 * FRACUNIT),
+      15: () => this.doPlatRaise(line, 24 * FRACUNIT),
+      20: () => this.doPlatRaise(line, 0),
+      55: () => this.doFloor(line, Specials.raiseFloorCrushDest, 1, FLOORSPEED, true),
+      101: () => this.doFloor(line, Specials.raiseFloorDest, 1),
     };
     const repeat: Record<number, () => boolean> = {
       42: () => this.doDoor(line, VLD_CLOSE),
@@ -509,7 +890,9 @@ export class Specials {
       60: () => this.doFloor(line, Specials.lowestFloor, -1),
       64: () => this.doFloor(line, (s) => Specials.nextHighestFloor(s, s.floorheight), 1),
       70: () => this.doFloor(line, Specials.highestFloor, -1),
-      43: () => this.doCeiling(line, (s) => s.floorheight),
+      43: () => this.doCrusher(line, CEIL_LOWERTOFLOOR),
+      138: () => this.lightTurnOn(line, 255),
+      139: () => this.lightTurnOn(line, 35),
     };
     if (once[sp] !== undefined) {
       if (once[sp]!()) this.changeSwitch(line, 0);
@@ -522,28 +905,65 @@ export class Specials {
     if (sp === 2) this.doDoor(line, VLD_OPEN);
     else if (sp === 3) this.doDoor(line, VLD_CLOSE);
     else if (sp === 4) this.doDoor(line, VLD_NORMAL);
-    else if (sp === 5) this.doFloor(line, (s) => Specials.nextHighestFloor(s, s.floorheight), 1);
+    else if (sp === 5) this.doFloor(line, Specials.raiseFloorDest, 1);
+    else if (sp === 6) this.doCrusher(line, CEIL_FASTCRUSH);
+    else if (sp === 8) this.doStairs(line, 8 * FRACUNIT, intdiv(FLOORSPEED, 4));
     else if (sp === 10) this.doPlatDwus(line);
+    else if (sp === 12) this.lightTurnOn(line, 0);
+    else if (sp === 13) this.lightTurnOn(line, 255);
     else if (sp === 16) this.doDoor(line, VLD_CLOSE30, true);
+    else if (sp === 17) this.startLightStrobing(line);
     else if (sp === 19) this.doFloor(line, (s) => s.floorheight - 8 * FRACUNIT, -1);
-    else if (sp === 36) this.doFloor(line, Specials.highestFloor, -1);
+    else if (sp === 22) this.doPlatRaise(line, 0);
+    else if (sp === 25) this.doCrusher(line, CEIL_CRUSHANDRAISE);
     else if (sp === 38) this.doFloor(line, Specials.lowestFloor, -1);
-    else if (sp === 39) {
-      this.teleport(line, side, thing);
-      clear = false;
-    } else if (sp === 52) {
+    else if (sp === 39) this.teleport(line, side, thing);
+    else if (sp === 44) this.doCrusher(line, CEIL_LOWERANDCRUSH);
+    else if (sp === 52) {
       this.exitRequested = true;
       clear = false;
-    } else if (sp === 88) {
-      this.doPlatDwus(line);
+    } else if (sp === 53) this.doPlatPerpetual(line);
+    else if (sp === 56) this.doFloor(line, Specials.raiseFloorCrushDest, 1, FLOORSPEED, true);
+    else if (sp === 58) this.doFloor(line, (s) => s.floorheight + 24 * FRACUNIT, 1);
+    else if (sp === 79) {
+      this.lightTurnOn(line, 35);
+      clear = false;
+    } else if (sp === 80) {
+      this.lightTurnOn(line, 0);
+      clear = false;
+    } else if (sp === 81) {
+      this.lightTurnOn(line, 255);
       clear = false;
     } else if (sp === 86) {
       this.doDoor(line, VLD_OPEN);
       clear = false;
+    } else if (sp === 87) {
+      this.doPlatPerpetual(line);
+      clear = false;
+    } else if (sp === 88) {
+      this.doPlatDwus(line);
+      clear = false;
     } else if (sp === 90) {
       this.doDoor(line, VLD_NORMAL);
       clear = false;
-    } else if (sp === 105) {
+    } else if (sp === 91) {
+      this.doFloor(line, (s) => Specials.nextHighestFloor(s, s.floorheight), 1);
+      clear = false;
+    } else if (sp === 92) {
+      this.doFloor(line, (s) => s.floorheight + 24 * FRACUNIT, 1);
+      clear = false;
+    } else if (sp === 94) {
+      this.doFloor(line, (s) => Specials.nextHighestFloor(s, s.floorheight), 1, FLOORSPEED, true);
+      clear = false;
+    } else if (sp === 97) {
+      this.teleport(line, side, thing);
+      clear = false;
+    } else if (sp === 98) {
+      this.doFloor(line, Specials.highestFloor, -1, FLOORSPEED * 4);
+      clear = false;
+    } else if (sp === 100) this.doStairs(line, 16 * FRACUNIT, FLOORSPEED * 4);
+    else if (sp === 104) this.turnTagLightsOff(line);
+    else if (sp === 105) {
       this.doDoor(line, VLD_BLAZERAISE);
       clear = false;
     } else if (sp === 106) {
@@ -552,14 +972,31 @@ export class Specials {
     } else if (sp === 107) {
       this.doDoor(line, VLD_BLAZECLOSE);
       clear = false;
-    } else if (sp === 120) {
+    } else if (sp === 108) this.doDoor(line, VLD_BLAZERAISE);
+    else if (sp === 109) this.doDoor(line, VLD_BLAZEOPEN);
+    else if (sp === 110) this.doDoor(line, VLD_BLAZECLOSE);
+    else if (sp === 119) this.doFloor(line, (s) => Specials.nextHighestFloor(s, s.floorheight), 1);
+    else if (sp === 120) {
       this.doPlatDwus(line, true);
       clear = false;
     } else if (sp === 121) this.doPlatDwus(line, true);
     else if (sp === 124) {
       this.exitRequested = this.secretExit = true;
       clear = false;
-    } else clear = false;
+    } else if (sp === 125) {
+      if (thing.player === null) this.teleport(line, side, thing);
+    } else if (sp === 126) {
+      if (thing.player === null) this.teleport(line, side, thing);
+      clear = false;
+    } else if (sp === 128) {
+      this.doFloor(line, (s) => Specials.nextHighestFloor(s, s.floorheight), 1);
+      clear = false;
+    } else if (sp === 129) {
+      this.doFloor(line, (s) => Specials.nextHighestFloor(s, s.floorheight), 1, FLOORSPEED * 4);
+      clear = false;
+    }     else if (sp === 130) this.doFloor(line, (s) => Specials.nextHighestFloor(s, s.floorheight), 1, FLOORSPEED * 4);
+    else if (sp === 141) this.doCrusher(line, CEIL_SILENTCRUSH);
+    else clear = false;
     if (clear) line.special = 0;
   }
 
@@ -570,10 +1007,11 @@ export class Specials {
       const sector = this.world.sectors[i]!;
       if (sector.tag !== tag) continue;
       for (const dest of this.world.mobjs) {
-        if (dest.type !== 14) continue;
+        if (dest.type !== MT_TELEPORTMAN) continue;
         const destSector = Collision.pointInSubsector(this.world, dest.x, dest.y).sector!;
         if (destSector !== sector && destSector.iSector !== i) continue;
         thing.momx = thing.momy = thing.momz = 0;
+        Collision.unsetThingPosition(this.world, thing);
         thing.x = dest.x;
         thing.y = dest.y;
         const ss = Collision.pointInSubsector(this.world, thing.x, thing.y);
@@ -581,6 +1019,7 @@ export class Specials {
         thing.ceilingz = ss.sector!.ceilingheight;
         thing.z = thing.floorz;
         thing.angle = dest.angle;
+        Collision.setThingPosition(this.world, thing);
         if (thing.player !== null) {
           thing.player.viewz = thing.z + thing.player.viewheight;
           thing.reactiontime = 18;

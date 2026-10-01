@@ -20,6 +20,7 @@ import {
   ANG45,
   ANG180,
   CF_GODMODE,
+  PW_INVULNERABILITY,
   HU_FONTEND,
   HU_FONTSTART,
   IT_BLUECARD,
@@ -237,7 +238,7 @@ export class Status {
       } else this.lastAttackDown = -1;
     }
 
-    if (this.facePriority < 5 && (player.cheats & CF_GODMODE) !== 0) {
+    if (this.facePriority < 5 && ((player.cheats & CF_GODMODE) !== 0 || player.powers[PW_INVULNERABILITY])) {
       this.facePriority = 4;
       this.faceIndex = ST_GODFACE;
       this.faceCount = 1;
