@@ -176,6 +176,7 @@ export class Game {
   _fastOn: boolean | null = null;
   fullscreen = false;
   crt = false;
+  maxFps = 0;
   iwadPath = "";
   menu: Menu | null = null;
   showMessages = true;
@@ -1167,6 +1168,12 @@ export class Game {
       game.video.showFps = game.showFps;
       game.video.crt = game.crt;
       game.playpal = game.wad.cacheLumpName("PLAYPAL");
+      if (game.video.maxColors < 256) {
+        process.stdout.write(
+          `palette quantized to ${game.video.maxColors} colors, shades ${game.video.shadePct}%, gray ${game.video.grayPct}%\n`,
+        );
+      }
+      if (game.maxFps > 0) process.stdout.write(`max fps: ${game.maxFps}\n`);
       game.video.setPalette(game.playpal);
       if (game.nosound) {
         game.sound.enabled = false;
@@ -1202,8 +1209,10 @@ export class Game {
       } else if (argv.includes("-warp")) game.loadLevel();
       else game.startTitle();
       const tickMs = 1000 / TICRATE;
+      const frameMs = game.maxFps > 0 ? 1000 / game.maxFps : 0;
       let accum = 0;
       let last = game.video.ticksMs();
+      let nextFrame = last;
       while (game.running) {
         for (const event of game.video.pollEvents()) game.handleEvent(event);
         const now = game.video.ticksMs();
@@ -1217,7 +1226,14 @@ export class Game {
           }
         }
         game.draw();
-        if (!game.timingdemo && accum < tickMs / 2) Game.usleep(1);
+        if (game.timingdemo) continue;
+        if (frameMs > 0) {
+          nextFrame += frameMs;
+          const after = game.video.ticksMs();
+          const wait = nextFrame - after;
+          if (wait > 1) Game.usleep(wait);
+          else if (wait < -frameMs) nextFrame = after;
+        } else if (accum < tickMs / 2) Game.usleep(1);
       }
       if (game.demoRecording) game.finishRecording();
       saveConfig(game);
@@ -1261,7 +1277,23 @@ export class Game {
       } else if (arg === "-record" && argv[i + 1] !== undefined) game.recordName = argv[++i]!;
       else if (arg === "-playdemo" && argv[i + 1] !== undefined) game.playdemoName = argv[++i]!;
       else if (arg === "-timedemo" && argv[i + 1] !== undefined) game.timedemoName = argv[++i]!;
-      else if (arg === "-nosound") game.nosound = true;
+      else if (arg === "-neogeo") {
+        game.video.maxColors = 75;
+        game.video.shadePct = 75;
+        game.video.grayPct = 20;
+      } else if (arg === "-maxfps" && argv[i + 1] !== undefined) {
+        const n = parseInt(argv[++i]!, 10);
+        game.maxFps = Math.max(0, Number.isFinite(n) ? Math.trunc(n) : 0);
+      } else if (arg === "-colors" && argv[i + 1] !== undefined) {
+        const n = parseInt(argv[++i]!, 10);
+        game.video.maxColors = Math.max(2, Math.min(256, Number.isFinite(n) ? Math.trunc(n) : 2));
+      } else if (arg === "-shades" && argv[i + 1] !== undefined) {
+        const n = parseInt(argv[++i]!, 10);
+        game.video.shadePct = Math.max(0, Math.min(100, Number.isFinite(n) ? Math.trunc(n) : 0));
+      } else if (arg === "-gray" && argv[i + 1] !== undefined) {
+        const n = parseInt(argv[++i]!, 10);
+        game.video.grayPct = Math.max(0, Math.min(100, Number.isFinite(n) ? Math.trunc(n) : 0));
+      } else if (arg === "-nosound") game.nosound = true;
       else if (arg === "-nomusic") game.nomusic = true;
       else if (!arg.startsWith("-") && arg.toLowerCase().endsWith(".wad")) iwad = arg;
     }

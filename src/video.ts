@@ -28,6 +28,181 @@ const SDL_WINDOW_FULLSCREEN_DESKTOP = 0x00001001;
 const SDL_RENDERER_ACCELERATED = 0x00000002;
 const SDL_RENDERER_PRESENTVSYNC = 0x00000004;
 const SDL_PIXELFORMAT_ARGB8888 = 0x16362004;
+
+function colorDist2(r1: number, g1: number, b1: number, r2: number, g2: number, b2: number): number {
+  const dr = r1 - r2;
+  const dg = g1 - g2;
+  const db = b1 - b2;
+  return dr * dr + dg * dg + db * db;
+}
+
+function colorLum(r: number, g: number, b: number): number {
+  return r * 3 + g * 6 + b;
+}
+
+function colorSat(r: number, g: number, b: number): number {
+  return Math.max(r, g, b) - Math.min(r, g, b);
+}
+
+/** 0 cinza, 1 marrom, 2 oliva, 3 azul. -1 fica no bloco cromatico. */
+function toneBin(r: number, g: number, b: number): number {
+  const sat = colorSat(r, g, b);
+  if (sat <= 28) return 0;
+  if (r > g + 28 && r > b + 28 && g * 2 < r) return -1;
+  if (g > r + 28 && g > b + 28 && sat > 64) return -1;
+  if (b > r + 24 && b > g + 16 && sat > 56) return -1;
+  if (b >= r && b >= g) return 3;
+  if (g + 6 >= r && g >= b) return 2;
+  if (r >= b && g + 8 >= b) return 1;
+  return -1;
+}
+
+function addFarthest(
+  src: Array<[number, number, number]>,
+  pal: Array<[number, number, number]>,
+  nChosen: number,
+  nWant: number,
+  nMaxLum: number,
+  chromaOnly: boolean,
+): number {
+  while (nChosen < nWant) {
+    let bestI = -1;
+    let bestD = -1;
+    for (let i = 1; i < 256; i++) {
+      const [r, g, b] = src[i]!;
+      if (nMaxLum >= 0 && colorLum(r, g, b) > nMaxLum) continue;
+      if (chromaOnly && toneBin(r, g, b) >= 0) continue;
+      let minD = 0x7fffffff;
+      for (let k = 0; k < nChosen; k++) {
+        const [pr, pg, pb] = pal[k]!;
+        const d = colorDist2(r, g, b, pr, pg, pb);
+        if (d < minD) minD = d;
+      }
+      if (minD > bestD) {
+        bestD = minD;
+        bestI = i;
+      }
+    }
+    if (bestI < 0 || bestD <= 0) break;
+    pal[nChosen] = [src[bestI]![0], src[bestI]![1], src[bestI]![2]];
+    nChosen++;
+  }
+  return nChosen;
+}
+
+function addToneRamp(
+  src: Array<[number, number, number]>,
+  pal: Array<[number, number, number]>,
+  nChosen: number,
+  nStop: number,
+  bin: number,
+): number {
+  while (nChosen < nStop) {
+    let bestI = -1;
+    let bestD = -1;
+    for (let i = 1; i < 256; i++) {
+      const [r, g, b] = src[i]!;
+      if (toneBin(r, g, b) !== bin) continue;
+      const lumI = colorLum(r, g, b);
+      let minD = 0x7fffffff;
+      for (let k = 0; k < nChosen; k++) {
+        const [pr, pg, pb] = pal[k]!;
+        let dl = lumI - colorLum(pr, pg, pb);
+        if (dl < 0) dl = -dl;
+        const d = dl * dl + Math.trunc(colorDist2(r, g, b, pr, pg, pb) / 64);
+        if (d < minD) minD = d;
+      }
+      if (minD > bestD) {
+        bestD = minD;
+        bestI = i;
+      }
+    }
+    if (bestI < 0 || bestD <= 400) break;
+    pal[nChosen] = [src[bestI]![0], src[bestI]![1], src[bestI]![2]];
+    nChosen++;
+  }
+  return nChosen;
+}
+
+/** Mesma reducao do Harbour: indice 0 reservado, rampas de luz e puxao para o cinza. */
+function quantizeColors(
+  src: Array<[number, number, number]>,
+  nWant: number,
+  shadePct: number,
+  grayPct: number,
+): Array<[number, number, number]> {
+  if (nWant < 2) nWant = 2;
+  if (nWant >= 256) return src;
+  const pal: Array<[number, number, number]> = new Array(256);
+  pal[0] = [src[0]![0], src[0]![1], src[0]![2]];
+  let nChosen = 1;
+  const nFree = nWant - 1;
+  let nShade = Math.trunc((nFree * shadePct) / 100);
+  if (nShade > nFree) nShade = nFree;
+  if (nShade < 0) nShade = 0;
+  if (nShade > 0) {
+    const quota = [0, 0, 0, 0];
+    let left = nShade;
+    if (nShade >= 4) {
+      quota[0] = quota[1] = quota[2] = quota[3] = 1;
+      left = nShade - 4;
+    }
+    quota[0]! += Math.trunc((left * 45) / 100);
+    quota[1]! += Math.trunc((left * 40) / 100);
+    quota[2]! += Math.trunc((left * 5) / 100);
+    quota[3]! += Math.trunc((left * 10) / 100);
+    const used = quota[0]! + quota[1]! + quota[2]! + quota[3]!;
+    quota[0]! += nShade - used;
+    for (let bin = 0; bin < 4; bin++) {
+      nChosen = addToneRamp(src, pal, nChosen, nChosen + quota[bin]!, bin);
+    }
+  }
+  nChosen = addFarthest(src, pal, nChosen, nWant, -1, nShade > 0);
+  if (nChosen < nWant) nChosen = addFarthest(src, pal, nChosen, nWant, -1, false);
+
+  const out: Array<[number, number, number]> = new Array(256);
+  for (let i = 0; i < 256; i++) {
+    const [sr, sg, sb] = src[i]!;
+    const srcLum = colorLum(sr, sg, sb);
+    const srcSat = colorSat(sr, sg, sb);
+    let bestI = 0;
+    let bestD = 0x7fffffff;
+    for (let k = 0; k < nChosen; k++) {
+      const [pr, pg, pb] = pal[k]!;
+      let d = colorDist2(sr, sg, sb, pr, pg, pb);
+      const lift = colorLum(pr, pg, pb) - srcLum;
+      if (srcLum <= 250 && lift > 240) d += Math.trunc((lift * lift) / 16);
+      if (nShade > 0) d += Math.trunc((lift * lift) / 48);
+      const satD = colorSat(pr, pg, pb) - srcSat;
+      if (srcSat <= 24 && satD > 16) d += satD * satD;
+      if (d < bestD) {
+        bestD = d;
+        bestI = k;
+        if (d === 0) break;
+      }
+    }
+    const chosen = pal[bestI]!;
+    let nR = Math.trunc((chosen[0] * 95) / 100);
+    let nG = Math.trunc((chosen[1] * 95) / 100);
+    let nB = Math.trunc((chosen[2] * 95) / 100);
+    if (nShade > 0 && grayPct > 0 && toneBin(chosen[0], chosen[1], chosen[2]) >= 0) {
+      const nMid = Math.trunc((nR + nB) / 2);
+      if (nG > nMid) nG = nMid + Math.trunc(((nG - nMid) * (100 - grayPct)) / 100);
+      const nGray = Math.trunc((nR + nG + nB) / 3);
+      const nKeep = 100 - grayPct;
+      nR = Math.trunc((nR * nKeep + nGray * grayPct) / 100);
+      nG = Math.trunc((nG * nKeep + nGray * grayPct) / 100);
+      nB = Math.trunc((nB * nKeep + nGray * grayPct) / 100);
+    } else if (nShade === 0 && colorDist2(chosen[0], chosen[1], chosen[2], 19, 34, 11) <= 625) {
+      const nGray = Math.trunc((Math.trunc((nR + nG + nB) / 3) * 85) / 100);
+      nR = Math.trunc((nR + nGray * 2) / 3);
+      nG = Math.trunc((nG + nGray * 2) / 3);
+      nB = Math.trunc((nB + nGray * 2) / 3);
+    }
+    out[i] = [nR, nG, nB];
+  }
+  return out;
+}
 const SDL_TEXTUREACCESS_STREAMING = 1;
 const SDL_QUIT = 0x100;
 const SDL_KEYDOWN = 0x300;
@@ -63,10 +238,11 @@ type SdlApi = {
   SDL_SetWindowSize: (w: unknown, width: number, height: number) => void;
   SDL_SetWindowPosition: (w: unknown, x: number, y: number) => void;
   SDL_SetWindowTitle: (w: unknown, title: string) => void;
+  SDL_GetWindowSize: (w: unknown, width: Buffer, height: Buffer) => void;
   SDL_CreateRenderer: (w: unknown, index: number, flags: number) => unknown;
   SDL_DestroyRenderer: (r: unknown) => void;
   SDL_RenderClear: (r: unknown) => number;
-  SDL_RenderCopy: (r: unknown, t: unknown, src: null, dst: null) => number;
+  SDL_RenderCopy: (r: unknown, t: unknown, src: null, dst: Buffer | null) => number;
   SDL_RenderPresent: (r: unknown) => void;
   SDL_CreateTexture: (r: unknown, format: number, access: number, w: number, h: number) => unknown;
   SDL_DestroyTexture: (t: unknown) => void;
@@ -122,6 +298,7 @@ function loadSdl(): SdlApi {
     SDL_SetWindowSize: lib.func("void SDL_SetWindowSize(SDL_Window *window, int w, int h)"),
     SDL_SetWindowPosition: lib.func("void SDL_SetWindowPosition(SDL_Window *window, int x, int y)"),
     SDL_SetWindowTitle: lib.func("void SDL_SetWindowTitle(SDL_Window *window, const char *title)"),
+    SDL_GetWindowSize: lib.func("void SDL_GetWindowSize(SDL_Window *window, _Out_ int *w, _Out_ int *h)"),
     SDL_CreateRenderer: lib.func("SDL_Renderer *SDL_CreateRenderer(SDL_Window *window, int index, uint32 flags)"),
     SDL_DestroyRenderer: lib.func("void SDL_DestroyRenderer(SDL_Renderer *renderer)"),
     SDL_RenderClear: lib.func("int SDL_RenderClear(SDL_Renderer *renderer)"),
@@ -151,6 +328,9 @@ export class Video {
   scale = 2;
   showFps = false;
   crt = false;
+  maxColors = 75;
+  shadePct = 75;
+  grayPct = 20;
   windowTitle = "DOOM";
   fpsValue = 0;
 
@@ -166,6 +346,17 @@ export class Video {
   private fpsStamp = 0;
   private mix: number[] = [];
   private mouseGrab = false;
+  private texW = SCREENWIDTH;
+  private texH = SCREENHEIGHT;
+  private crtW = 0;
+  private crtH = 0;
+  private crtMap = new Uint16Array(0);
+  private crtGain = new Uint8Array(0);
+  private crtMask = new Int32Array(9);
+  private crtBlur = new Uint8Array(SCREENWIDTH * SCREENHEIGHT * 3);
+  private winWBuf = Buffer.alloc(4);
+  private winHBuf = Buffer.alloc(4);
+  private dstRect = Buffer.alloc(16);
 
   init(fullscreen = false, title = "DOOM"): void {
     this.fb.fill(0);
@@ -214,9 +405,12 @@ export class Video {
   }
 
   setPaletteRaw(rgb768: Buffer): void {
+    const src: Array<[number, number, number]> = new Array(256);
     for (let i = 0; i < 256; i++) {
-      this.palette[i] = [rgb768[i * 3]!, rgb768[i * 3 + 1]!, rgb768[i * 3 + 2]!];
+      src[i] = [rgb768[i * 3]! & 255, rgb768[i * 3 + 1]! & 255, rgb768[i * 3 + 2]! & 255];
     }
+    const out = quantizeColors(src, this.maxColors, this.shadePct, this.grayPct);
+    for (let i = 0; i < 256; i++) this.palette[i] = out[i]!;
   }
 
   playSfx(pcm: Buffer, volume = 8): void {
@@ -233,27 +427,10 @@ export class Video {
   }
 
   present(): void {
-    if (!this.sdl || !this.renderer || !this.texture) return;
+    if (!this.sdl || !this.renderer) return;
     this.pumpAudio();
-    const n = SCREENWIDTH * SCREENHEIGHT;
-    const pixels = this.argb;
-    for (let i = 0; i < n; i++) {
-      let [r, g, b] = this.palette[this.fb[i]! & 0xff]!;
-      if (this.crt) {
-        const scan = (Math.trunc(i / SCREENWIDTH) & 1) ? 180 : 256;
-        r = Math.min(255, Math.trunc((r * scan) / 256));
-        g = Math.min(255, Math.trunc((g * scan) / 256));
-        b = Math.min(255, Math.trunc((b * scan) / 256));
-      }
-      const o = i * 4;
-      pixels[o] = b;
-      pixels[o + 1] = g;
-      pixels[o + 2] = r;
-      pixels[o + 3] = 255;
-    }
-    this.sdl.SDL_UpdateTexture(this.texture, null, pixels, SCREENWIDTH * 4);
-    this.sdl.SDL_RenderClear(this.renderer);
-    this.sdl.SDL_RenderCopy(this.renderer, this.texture, null, null);
+    if (this.crt) this.presentCrt();
+    else this.presentFlat();
     this.sdl.SDL_RenderPresent(this.renderer);
     this.fpsFrames++;
     const now = this.ticksMs();
@@ -335,6 +512,178 @@ export class Video {
     this.sdl = null;
   }
 
+  private presentFlat(): void {
+    if (!this.ensureTexture(SCREENWIDTH, SCREENHEIGHT)) return;
+    const n = SCREENWIDTH * SCREENHEIGHT;
+    const pixels = this.argb;
+    for (let i = 0; i < n; i++) {
+      const [r, g, b] = this.palette[this.fb[i]! & 0xff]!;
+      const o = i * 4;
+      pixels[o] = b;
+      pixels[o + 1] = g;
+      pixels[o + 2] = r;
+      pixels[o + 3] = 255;
+    }
+    this.sdl!.SDL_UpdateTexture(this.texture, null, pixels, SCREENWIDTH * 4);
+    this.sdl!.SDL_RenderClear(this.renderer);
+    this.sdl!.SDL_RenderCopy(this.renderer, this.texture, null, null);
+  }
+
+  /** Curvatura, vinheta, scanline, fosforo e borrao horizontal, no tamanho da janela. */
+  private presentCrt(): void {
+    const view = this.outputView();
+    if (!this.ensureTexture(view.dw, view.dh)) return;
+    this.buildCrt(view.dw, view.dh);
+    const blur = this.crtBlur;
+    for (let y = 0; y < SCREENHEIGHT; y++) {
+      const row = y * SCREENWIDTH;
+      for (let x = 0; x < SCREENWIDTH; x++) {
+        const c = this.palette[this.fb[row + x]! & 255]!;
+        const l = this.palette[this.fb[row + (x > 0 ? x - 1 : x)]! & 255]!;
+        const rgt = this.palette[this.fb[row + (x < SCREENWIDTH - 1 ? x + 1 : x)]! & 255]!;
+        const o = (row + x) * 3;
+        blur[o] = (l[0] + 2 * c[0] + rgt[0]) >> 2;
+        blur[o + 1] = (l[1] + 2 * c[1] + rgt[1]) >> 2;
+        blur[o + 2] = (l[2] + 2 * c[2] + rgt[2]) >> 2;
+      }
+    }
+    const dw = view.dw;
+    const dh = view.dh;
+    const bytes = dw * dh * 4;
+    if (this.argb.length < bytes) this.argb = Buffer.alloc(bytes);
+    const pixels = this.argb;
+    const map = this.crtMap;
+    const gain = this.crtGain;
+    const mask = this.crtMask;
+    for (let y = 0; y < dh; y++) {
+      let k = 0;
+      const row = y * dw;
+      for (let x = 0; x < dw; x++) {
+        const p = row + x;
+        const o = p * 4;
+        const idx = map[p]!;
+        if (idx === 0xffff) {
+          pixels[o] = 0;
+          pixels[o + 1] = 0;
+          pixels[o + 2] = 0;
+        } else {
+          const bi = idx * 3;
+          const g = gain[p]!;
+          const mk = k * 3;
+          let r = (blur[bi]! * g * mask[mk]!) >> 16;
+          let gr = (blur[bi + 1]! * g * mask[mk + 1]!) >> 16;
+          let b = (blur[bi + 2]! * g * mask[mk + 2]!) >> 16;
+          if (r > 255) r = 255;
+          if (gr > 255) gr = 255;
+          if (b > 255) b = 255;
+          pixels[o] = b;
+          pixels[o + 1] = gr;
+          pixels[o + 2] = r;
+        }
+        pixels[o + 3] = 255;
+        if (++k === 3) k = 0;
+      }
+    }
+    this.dstRect.writeInt32LE(view.dx, 0);
+    this.dstRect.writeInt32LE(view.dy, 4);
+    this.dstRect.writeInt32LE(dw, 8);
+    this.dstRect.writeInt32LE(dh, 12);
+    this.sdl!.SDL_UpdateTexture(this.texture, null, pixels, dw * 4);
+    this.sdl!.SDL_RenderClear(this.renderer);
+    this.sdl!.SDL_RenderCopy(this.renderer, this.texture, null, this.dstRect);
+  }
+
+  private outputView(): { dw: number; dh: number; dx: number; dy: number } {
+    let winW = SCREENWIDTH * this.scale;
+    let winH = SCREENHEIGHT * this.scale;
+    if (this.fullscreen && this.sdl && this.window) {
+      this.sdl.SDL_GetWindowSize(this.window, this.winWBuf, this.winHBuf);
+      const w = this.winWBuf.readInt32LE(0);
+      const h = this.winHBuf.readInt32LE(0);
+      if (w > 0 && h > 0) {
+        winW = w;
+        winH = h;
+      }
+    }
+    let fit = Math.min(Math.floor(winW / SCREENWIDTH), Math.floor(winH / SCREENHEIGHT));
+    if (fit < 1) fit = 1;
+    const dw = SCREENWIDTH * fit;
+    const dh = SCREENHEIGHT * fit;
+    return { dw, dh, dx: Math.trunc((winW - dw) / 2), dy: Math.trunc((winH - dh) / 2) };
+  }
+
+  private buildCrt(dw: number, dh: number): void {
+    if (this.crtW === dw && this.crtH === dh) return;
+    const map = new Uint16Array(dw * dh);
+    const gain = new Uint8Array(dw * dh);
+    let sl = dh / SCREENHEIGHT - 1;
+    if (sl < 0) sl = 0;
+    if (sl > 1) sl = 1;
+    sl *= 0.45;
+    for (let y = 0; y < dh; y++) {
+      const ny = (2 * y) / dh - 1;
+      const ny2 = (ny * ny) / 32;
+      for (let x = 0; x < dw; x++) {
+        const nx = (2 * (x + 0.5)) / dw - 1;
+        const u = nx * (1 + ny2);
+        const v = ny * (1 + (nx * nx) / 24);
+        const p = y * dw + x;
+        if (u <= -1 || u >= 1 || v <= -1 || v >= 1) {
+          map[p] = 0xffff;
+          continue;
+        }
+        const sx = (u + 1) * 0.5 * SCREENWIDTH;
+        const sy = (v + 1) * 0.5 * SCREENHEIGHT;
+        let ix = Math.trunc(sx);
+        let iy = Math.trunc(sy);
+        if (ix > SCREENWIDTH - 1) ix = SCREENWIDTH - 1;
+        if (iy > SCREENHEIGHT - 1) iy = SCREENHEIGHT - 1;
+        if (ix < 0) ix = 0;
+        if (iy < 0) iy = 0;
+        const d = sy - iy - 0.5;
+        const uu = (u + 1) * 0.5;
+        const vv = (v + 1) * 0.5;
+        let g = (1 - sl * 4 * d * d) * Math.pow(16 * uu * vv * (1 - uu) * (1 - vv), 0.12) * 255;
+        if (!Number.isFinite(g) || g < 0) g = 0;
+        if (g > 255) g = 255;
+        map[p] = iy * SCREENWIDTH + ix;
+        gain[p] = Math.trunc(g + 0.5);
+      }
+    }
+    const wide = dw >= 2 * SCREENWIDTH;
+    const off = wide ? 0.7 : 1;
+    const boost = wide ? 1.4 : 1.15;
+    for (let m = 0; m < 3; m++) {
+      for (let c = 0; c < 3; c++) {
+        this.crtMask[m * 3 + c] = Math.trunc(256 * boost * (m === c ? 1 : off));
+      }
+    }
+    this.crtMap = map;
+    this.crtGain = gain;
+    this.crtW = dw;
+    this.crtH = dh;
+  }
+
+  private ensureTexture(w: number, h: number): boolean {
+    if (!this.sdl || !this.renderer) return false;
+    if (this.texture && this.texW === w && this.texH === h) return true;
+    if (this.texture) {
+      this.sdl.SDL_DestroyTexture(this.texture);
+      this.texture = null;
+    }
+    this.texture = this.sdl.SDL_CreateTexture(
+      this.renderer,
+      SDL_PIXELFORMAT_ARGB8888,
+      SDL_TEXTUREACCESS_STREAMING,
+      w,
+      h,
+    );
+    if (!this.texture) return false;
+    this.texW = w;
+    this.texH = h;
+    return true;
+  }
+
   private applyMode(): void {
     if (!this.sdl) return;
     const w = SCREENWIDTH * this.scale;
@@ -364,6 +713,8 @@ export class Video {
         SCREENHEIGHT,
       );
       if (!this.texture) throw new Error(`SDL_CreateTexture: ${this.error()}`);
+      this.texW = SCREENWIDTH;
+      this.texH = SCREENHEIGHT;
     }
     this.sdl.SDL_SetWindowFullscreen(this.window, this.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
     if (!this.fullscreen) {
