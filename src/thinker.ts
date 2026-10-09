@@ -89,7 +89,14 @@ export class Thinker {
     }
     world.mobjs.push(mo);
     Collision.setThingPosition(world, mo);
-    Thinker.setMobjState(mo, Number(info[MI_SPAWNSTATE]), world, game);
+    // Vanilla does not call P_SetMobjState here: A_Look must wait until the
+    // thinker advances, after P_SpawnMapThing has set the facing angle.
+    const state = Number(info[MI_SPAWNSTATE]);
+    const st = STATES[state]!;
+    mo.istate = state;
+    mo.tics = st[2];
+    mo.sprite = SPRNAMES[st[0]] ?? "";
+    mo.frame = st[1];
     return mo;
   }
 

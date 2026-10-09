@@ -328,9 +328,9 @@ export class Video {
   scale = 2;
   showFps = false;
   crt = false;
-  maxColors = 75;
-  shadePct = 75;
-  grayPct = 20;
+  maxColors = 256;
+  shadePct = 0;
+  grayPct = 0;
   windowTitle = "DOOM";
   fpsValue = 0;
 
@@ -746,8 +746,12 @@ export class Video {
   private pumpAudio(): void {
     if (!this.sdl || !this.audioDev || !this.mix.length) return;
     const queued = this.sdl.SDL_GetQueuedAudioSize(this.audioDev) >>> 0;
-    if (queued > 11025 * 2) return;
-    const n = Math.min(this.mix.length, 2048);
+    // 16-bit mono at 11025 Hz. Three device periods (~139 ms). A 1 s
+    // backlog is what made shots and doors land late.
+    const limit = 512 * 2 * 3;
+    if (queued >= limit) return;
+    const n = Math.min(this.mix.length, Math.floor((limit - queued) / 2));
+    if (n < 1) return;
     const chunk = this.mix.splice(0, n);
     const pcm = Buffer.alloc(n * 2);
     for (let i = 0; i < n; i++) pcm.writeUInt16LE(chunk[i]! & 0xffff, i * 2);

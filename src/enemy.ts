@@ -90,6 +90,7 @@ import {
   MT_KNIGHT,
   MT_PAIN,
   MT_PLASMA,
+  MT_PLAYER,
   MT_POSSESSED,
   MT_ROCKET,
   MT_SERGEANT,
@@ -743,7 +744,8 @@ export class Enemy {
     damage: number,
     kind: string,
   ): void {
-    const a = src.angle;
+    const aim = Collision.missileAim(world, src);
+    const a = aim.angle;
     const typ = kind === "rocket" ? MT_ROCKET : kind === "plasma" ? MT_PLASMA : MT_BFG;
     const actualSpeed = Number(MOBJINFO[typ][MI_SPEED]) || speed;
     const mo = Thinker.spawnMobj(world, src.x, src.y, src.z + 32 * FRACUNIT, typ, null);
@@ -751,9 +753,48 @@ export class Enemy {
     mo.angle = a;
     mo.momx = fixedMul(actualSpeed, fineCos(a));
     mo.momy = fixedMul(actualSpeed, fineSin(a));
-    mo.momz = 0;
+    mo.momz = fixedMul(actualSpeed, aim.slope);
     mo.missileKind = kind;
+    if (damage) mo.damage = damage;
     Enemy.checkMissileSpawn(mo);
+  }
+
+  /** The blast reached this body, including a shot that died on the floor under it. */
+  static missileReaches(mo: Mobj, other: Mobj, x: number, y: number, z: number): boolean {
+    if (other === mo || other === mo.target || other.health <= 0) return false;
+    if ((other.flags & MF_SHOOTABLE) === 0) return false;
+    const reach = other.radius + mo.radius;
+    if (Math.abs(other.x - x) >= reach || Math.abs(other.y - y) >= reach) return false;
+    const slack = 64 * FRACUNIT;
+    const z1 = z + mo.momz;
+    let low = Math.min(z, z1) - slack;
+    let high = Math.max(z, z1) + mo.height + slack;
+    if (z <= mo.floorz) {
+      low = Math.min(low, mo.floorz - slack);
+      high = Math.max(high, mo.floorz + slack);
+    }
+    return low <= other.z + other.height && high >= other.z;
+  }
+
+  private static missileVictim(world: World, mo: Mobj): Mobj | null {
+    const spots: Array<[number, number, number]> = [[mo.x, mo.y, mo.z]];
+    if (mo.tmx !== mo.x || mo.tmy !== mo.y) spots.push([mo.tmx, mo.tmy, mo.z]);
+    let best: Mobj | null = null;
+    let bestDist = 1 << 62;
+    for (const other of world.mobjs) {
+      if (mo.target && Collision.sameSpecies(mo.target, other) && other !== mo.target && other.type !== MT_PLAYER) {
+        continue;
+      }
+      for (const [x, y, z] of spots) {
+        if (!Enemy.missileReaches(mo, other, x, y, z)) continue;
+        const dist = Math.max(Math.abs(other.x - x), Math.abs(other.y - y));
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = other;
+        }
+      }
+    }
+    return best;
   }
 
   private static tickMissile(world: World, mo: Mobj, game: Game): void {
@@ -785,6 +826,8 @@ export class Enemy {
   }
 
   private static explodeMissile(world: World, mo: Mobj, game: Game, hit: Mobj | null): void {
+    if (!hit) hit = mo.struck ?? Enemy.missileVictim(world, mo);
+    mo.struck = null;
     if (hit) {
       const damage = mo.damage || Number(MOBJINFO[mo.type][MI_DAMAGE]);
       game.damageMobj(hit, mo.target ?? mo, damage * ((Enemy.random() % 8) + 1), mo);

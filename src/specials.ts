@@ -457,13 +457,42 @@ export class Specials {
     return ok;
   }
 
+  private lockedBlazeDoor(line: Line, thing: Mobj, sp: number): void {
+    const p = thing.player;
+    if (!p) return;
+    let card: number;
+    let skull: number;
+    let name: string;
+    if (sp === 99 || sp === 133) {
+      card = IT_BLUECARD;
+      skull = IT_BLUESKULL;
+      name = "blue";
+    } else if (sp === 134 || sp === 135) {
+      card = IT_REDCARD;
+      skull = IT_REDSKULL;
+      name = "red";
+    } else {
+      card = IT_YELLOWCARD;
+      skull = IT_YELLOWSKULL;
+      name = "yellow";
+    }
+    if (!(p.cards[card] || p.cards[skull])) {
+      p.message = `You need a ${name} key to open this door`;
+      this.sound.play("oof");
+      return;
+    }
+    if (this.doDoor(line, VLD_BLAZEOPEN)) {
+      this.changeSwitch(line, sp === 99 || sp === 134 || sp === 136 ? 1 : 0);
+    }
+  }
+
   verticalDoor(line: Line, thing: Mobj): void {
     const p = thing.player;
     const sp = line.special;
     const locks: Array<[number[], number, number, string]> = [
-      [[26, 32, 99, 133], IT_BLUECARD, IT_BLUESKULL, "blue"],
-      [[27, 34, 136, 137], IT_YELLOWCARD, IT_YELLOWSKULL, "yellow"],
-      [[28, 33, 134, 135], IT_REDCARD, IT_REDSKULL, "red"],
+      [[26, 32], IT_BLUECARD, IT_BLUESKULL, "blue"],
+      [[27, 34], IT_YELLOWCARD, IT_YELLOWSKULL, "yellow"],
+      [[28, 33], IT_REDCARD, IT_REDSKULL, "red"],
     ];
     for (const [nums, card, skull, name] of locks) {
       if (nums.includes(sp) && p && !(p.cards[card] || p.cards[skull])) {
@@ -480,7 +509,7 @@ export class Specials {
       type = VLD_OPEN;
       line.special = 0;
     } else if (sp === 117) type = VLD_BLAZERAISE;
-    else if ([118, 99, 133, 134, 135, 136, 137].includes(sp)) {
+    else if (sp === 118) {
       type = VLD_BLAZEOPEN;
       line.special = 0;
     } else type = VLD_NORMAL;
@@ -842,8 +871,12 @@ export class Specials {
   useSpecial(line: Line, thing: Mobj, side: number): void {
     if (side !== 0) return;
     const sp = line.special;
-    if ([1, 26, 27, 28, 31, 32, 33, 34, 99, 117, 118, 133, 134, 135, 136, 137].includes(sp)) {
+    if ([1, 26, 27, 28, 31, 32, 33, 34, 117, 118].includes(sp)) {
       this.verticalDoor(line, thing);
+      return;
+    }
+    if ([99, 133, 134, 135, 136, 137].includes(sp)) {
+      this.lockedBlazeDoor(line, thing, sp);
       return;
     }
     if (sp === 11 || sp === 51) {
@@ -864,8 +897,7 @@ export class Specials {
       18: () => this.doFloor(line, (s) => Specials.nextHighestFloor(s, s.floorheight), 1),
       23: () => this.doFloor(line, Specials.lowestFloor, -1),
       71: () => this.doFloor(line, Specials.highestFloor, -1),
-      101: () => this.doFloor(line, (s) => Specials.nextHighestFloor(s, s.floorheight), 1),
-      102: () => this.doFloor(line, (s) => s.floorheight - 8 * FRACUNIT, -1),
+      102: () => this.doFloor(line, Specials.highestFloor, -1),
       7: () => this.doStairs(line, 8 * FRACUNIT, intdiv(FLOORSPEED, 4)),
       127: () => this.doStairs(line, 16 * FRACUNIT, FLOORSPEED * 4),
       41: () => this.doCrusher(line, CEIL_LOWERTOFLOOR),
@@ -886,7 +918,7 @@ export class Specials {
       115: () => this.doDoor(line, VLD_BLAZEOPEN),
       116: () => this.doDoor(line, VLD_BLAZECLOSE),
       120: () => this.doPlatDwus(line, true),
-      45: () => this.doFloor(line, (s) => s.floorheight - 8 * FRACUNIT, -1),
+      45: () => this.doFloor(line, Specials.highestFloor, -1),
       60: () => this.doFloor(line, Specials.lowestFloor, -1),
       64: () => this.doFloor(line, (s) => Specials.nextHighestFloor(s, s.floorheight), 1),
       70: () => this.doFloor(line, Specials.highestFloor, -1),
@@ -913,7 +945,7 @@ export class Specials {
     else if (sp === 13) this.lightTurnOn(line, 255);
     else if (sp === 16) this.doDoor(line, VLD_CLOSE30, true);
     else if (sp === 17) this.startLightStrobing(line);
-    else if (sp === 19) this.doFloor(line, (s) => s.floorheight - 8 * FRACUNIT, -1);
+    else if (sp === 19) this.doFloor(line, Specials.highestFloor, -1);
     else if (sp === 22) this.doPlatRaise(line, 0);
     else if (sp === 25) this.doCrusher(line, CEIL_CRUSHANDRAISE);
     else if (sp === 38) this.doFloor(line, Specials.lowestFloor, -1);

@@ -62,6 +62,7 @@ import {
   WP_SUPERSHOTGUN,
 } from "./defs.ts";
 import { deh, dehString } from "./deh.ts";
+import { MT_PLAYER } from "./info.ts";
 import { Enemy } from "./enemy.ts";
 import type { Game } from "./game.ts";
 import { Mobj } from "./mobj.ts";
@@ -78,7 +79,7 @@ export class Ticcmd {
   ) {}
 }
 
-type AttackStep = [string, number, number, string, number, number];
+type AttackStep = [string, number, number, string, number, number, boolean?];
 
 export class Player {
   static readonly FORWARDMOVE = [0x19, 0x32];
@@ -190,6 +191,7 @@ export class Player {
       angle: asU32(intdiv(start.angle, 45) * 0x20000000),
       floorz: sec.floorheight,
       ceilingz: sec.ceilingheight,
+      type: MT_PLAYER,
     });
     const p = new Player(mo, cheats);
     mo.player = p;
@@ -385,7 +387,8 @@ export class Player {
       ],
       [WP_PLASMA]: [
         ["PLSGA0", 3, 1, "PLSFA0", 4, 1],
-        ["PLSGB0", 20, 0, "", 0, 0],
+        // A_ReFire: entering this frame restarts the shot while attack is held.
+        ["PLSGB0", 20, 0, "", 0, 0, true],
       ],
       [WP_BFG]: [
         ["BFGGA0", 20, 0, "", 0, 0],
@@ -543,7 +546,12 @@ export class Player {
         }
         return;
       }
-      const [body, tics, fire, flash, ft, light] = seq[p.pspriteStep]!;
+      const step = seq[p.pspriteStep]!;
+      if (step[6] && firing && can && p.pendingweapon === WP_NOCHANGE && p.health > 0) {
+        p.pspriteStep = 0;
+        continue;
+      }
+      const [body, tics, fire, flash, ft, light] = step;
       p.pspriteBody = body;
       p.pspriteTics = tics;
       if (ft) {
@@ -580,7 +588,10 @@ export class Player {
     const weapon = p.readyweapon;
     let hit = false;
     if (mo && [WP_MISSILE, WP_PLASMA, WP_BFG].includes(weapon)) {
-      if (weapon === WP_PLASMA) void (Enemy.publicRandom() & 1);
+      if (weapon === WP_PLASMA) {
+        p.pspriteFlash = Enemy.publicRandom() & 1 ? "PLSFB0" : "PLSFA0";
+        p.flashTics = 4;
+      }
       if (weapon === WP_MISSILE) {
         Enemy.spawnPlayerMissile(game.world!, mo, "MISL", 20 * FRACUNIT, 20, "rocket");
         game.startSound("rlaunc");

@@ -139,6 +139,7 @@ export class Mobj {
   attackKind = "hitscan";
   didFire = false;
   missileKind = "";
+  struck: Mobj | null = null;
   tracer: Mobj | null = null;
   easySkip = false;
   istate = 0;

@@ -18,6 +18,7 @@ import {
   FINEMASK,
   FRACBITS,
   FRACUNIT,
+  MF_NOSECTOR,
   MF_SHADOW,
   SCREENWIDTH,
   SIL_BOTTOM,
@@ -205,7 +206,7 @@ export class Sprites {
   static drawSprites(renderer: Renderer, world: World, fb: Uint8Array): void {
     const visible: SpriteDraw[] = [];
     for (const mobj of world.mobjs) {
-      if ((mobj.sprite ?? "") === "" || (mobj.player ?? null) !== null) continue;
+      if ((mobj.sprite ?? "") === "" || (mobj.player ?? null) !== null || (mobj.flags & MF_NOSECTOR) !== 0) continue;
       const item = Sprites.project(renderer, mobj);
       if (item !== null) visible.push(item);
     }

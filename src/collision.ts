@@ -231,7 +231,7 @@ export class Collision {
     return true;
   }
 
-  private static sameSpecies(target: Mobj, other: Mobj): boolean {
+  static sameSpecies(target: Mobj, other: Mobj): boolean {
     if (target.type === other.type) return true;
     if (target.type === MT_KNIGHT && other.type === MT_BRUISER) return true;
     return target.type === MT_BRUISER && other.type === MT_KNIGHT;
@@ -250,14 +250,13 @@ export class Collision {
       return false;
     }
     if (tm.flags & MF_MISSILE) {
-      if (tm.z > other.z + other.height || tm.z + tm.height < other.z) return true;
       if (tm.target && Collision.sameSpecies(tm.target, other)) {
         if (other === tm.target) return true;
         if (other.type !== MT_PLAYER) return false;
       }
       if ((other.flags & MF_SHOOTABLE) === 0) return (other.flags & MF_SOLID) === 0;
-      if (game)
-        game.damageMobj(other, tm.target ?? tm, ((Enemy.publicRandom() % 8) + 1) * (tm.damage || 0), tm);
+      if (!Enemy.missileReaches(tm, other, tm.tmx, tm.tmy, tm.z)) return true;
+      tm.struck = other;
       return false;
     }
     if (other.flags & MF_SPECIAL) {
@@ -755,14 +754,20 @@ export class Collision {
     return Collision.aim(world, source, angle, range).slope;
   }
 
-  static bulletSlope(world: World, source: Mobj): number {
+  /** P_SpawnPlayerMissile aim: straight, then a step left and right. The angle that finds a target is the one the missile flies. */
+  static missileAim(world: World, source: Mobj): { angle: number; slope: number } {
     const base = source.angle;
     const span = 16 * 64 * FRACUNIT;
-    for (const ang of [base, asU32(base + (1 << 26)), asU32(base - (1 << 26))]) {
+    const shifted = asU32(base + (1 << 26));
+    for (const ang of [base, shifted, asU32(shifted - (2 << 26))]) {
       const aimed = Collision.aim(world, source, ang, span);
-      if (aimed.target) return aimed.slope;
+      if (aimed.target) return { angle: ang, slope: aimed.slope };
     }
-    return 0;
+    return { angle: base, slope: 0 };
+  }
+
+  static bulletSlope(world: World, source: Mobj): number {
+    return Collision.missileAim(world, source).slope;
   }
 
   static lineAttack(
